@@ -18,3 +18,20 @@ psycopg2-binary==2.9.9
 python-socketio==5.10.0
 Flask-Limiter==3.5.0
 redis==5.0.1
+
+# Production dependencies
+eventlet==0.33.3
+gevent==23.9.1
+greenlet==3.0.1
+
+# Monitoring and logging
+sentry-sdk[flask]==1.38.0
+prometheus-flask-exporter==0.23.0
+
+# Security
+cryptography==41.0.7
+PyJWT==2.8.0
+
+# Performance
+ujson==5.8.0
+orjson==3.9.10

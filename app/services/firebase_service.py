@@ -27,12 +27,12 @@ class FirebaseService:
             # Verify connectivity by getting a test user (this will fail gracefully if no users exist)
             try:
                 auth.list_users(max_results=1)
-                self.logger.info("✅ Firebase Admin SDK initialized and verified successfully")
+                self.logger.info("Firebase Admin SDK initialized and verified successfully")
             except Exception as e:
-                self.logger.info("✅ Firebase Admin SDK initialized (verification skipped)")
+                self.logger.info("Firebase Admin SDK initialized (verification skipped)")
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize Firebase: {str(e)}")
+            self.logger.error(f"Failed to initialize Firebase: {str(e)}")
             raise
     
     def verify_token(self, id_token):

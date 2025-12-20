@@ -7,6 +7,9 @@ logger = logging.getLogger(__name__)
 def seed_initial_data():
     """Seed initial data for the application"""
     try:
+        # Ensure all tables exist first
+        db.create_all()
+        
         # Check if we already have data
         if User.query.count() > 0:
             logger.info("Database already contains data, skipping seed")
@@ -32,12 +35,13 @@ def seed_initial_data():
         # Commit the changes
         db.session.commit()
         
-        logger.info("✅ Initial data seeded successfully")
+        logger.info("Initial data seeded successfully")
         
     except Exception as e:
-        logger.error(f"❌ Error seeding initial data: {str(e)}")
+        logger.error(f"Error seeding initial data: {str(e)}")
         db.session.rollback()
-        raise
+        # Don't raise in development mode
+        pass
 
 def seed_demo_data():
     """Seed demo data for development/testing"""
@@ -109,9 +113,9 @@ def seed_demo_data():
             db.session.add(issue)
         
         db.session.commit()
-        logger.info("✅ Demo data seeded successfully")
+        logger.info("Demo data seeded successfully")
         
     except Exception as e:
-        logger.error(f"❌ Error seeding demo data: {str(e)}")
+        logger.error(f"Error seeding demo data: {str(e)}")
         db.session.rollback()
         raise

@@ -1,4 +1,4 @@
-from flask_socketio import emit, join_room, leave_room, disconnect, request
+from flask_socketio import emit, join_room, leave_room, disconnect
 from flask import current_app
 import logging
 
@@ -10,13 +10,13 @@ def register_socket_events(socketio):
     @socketio.on('connect')
     def handle_connect(auth):
         """Handle client connection"""
-        logger.info(f"Client connected: {request.sid}")
+        logger.info("Client connected")
         emit('connected', {'message': 'Connected to CivicFix real-time service'})
     
     @socketio.on('disconnect')
     def handle_disconnect():
         """Handle client disconnection"""
-        logger.info(f"Client disconnected: {request.sid}")
+        logger.info("Client disconnected")
     
     @socketio.on('join_location')
     def handle_join_location(data):

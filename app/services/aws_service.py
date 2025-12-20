@@ -33,13 +33,13 @@ class AWSService:
             # Verify S3 connectivity and bucket
             self._ensure_bucket_exists()
             
-            self.logger.info(f"✅ AWS S3 initialized successfully with bucket: {self.bucket_name}")
+            self.logger.info(f"AWS S3 initialized successfully with bucket: {self.bucket_name}")
             
         except NoCredentialsError:
-            self.logger.error("❌ AWS credentials not found")
+            self.logger.error("AWS credentials not found")
             raise
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize AWS services: {str(e)}")
+            self.logger.error(f"Failed to initialize AWS services: {str(e)}")
             raise
     
     def _ensure_bucket_exists(self):
@@ -71,13 +71,13 @@ class AWSService:
                     # Configure bucket for private access
                     self._configure_bucket_security()
                     
-                    self.logger.info(f"✅ S3 bucket '{self.bucket_name}' created successfully")
+                    self.logger.info("S3 bucket created successfully")
                     
                 except ClientError as create_error:
-                    self.logger.error(f"❌ Failed to create S3 bucket: {str(create_error)}")
+                    self.logger.error(f"Failed to create S3 bucket: {str(create_error)}")
                     raise
             else:
-                self.logger.error(f"❌ Error accessing S3 bucket: {str(e)}")
+                self.logger.error(f"Error accessing S3 bucket: {str(e)}")
                 raise
     
     def _configure_bucket_security(self):

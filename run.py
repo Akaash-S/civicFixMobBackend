@@ -24,7 +24,7 @@ def main():
         host = os.environ.get('HOST', '0.0.0.0')
         
         # Log startup information
-        app.logger.info(f"🚀 Starting CivicFix backend server")
+        app.logger.info("Starting CivicFix backend server")
         app.logger.info(f"Environment: {env}")
         app.logger.info(f"Host: {host}:{port}")
         app.logger.info(f"Debug mode: {app.config.get('DEBUG', False)}")
@@ -42,7 +42,12 @@ def main():
                 allow_unsafe_werkzeug=True
             )
         else:
-            # Production server
+            # Production: This should not be called directly in production
+            # Use Gunicorn instead: gunicorn --config gunicorn.conf.py run:socketio
+            app.logger.warning("Production mode detected. Use Gunicorn for production deployment.")
+            app.logger.info("Command: gunicorn --config gunicorn.conf.py run:socketio")
+            
+            # Fallback for testing
             socketio.run(
                 app,
                 host=host,
@@ -52,8 +57,11 @@ def main():
             )
             
     except Exception as e:
-        print(f"❌ Failed to start CivicFix backend: {str(e)}")
+        print(f"Failed to start CivicFix backend: {str(e)}")
         sys.exit(1)
+
+# Create application instance for Gunicorn
+app, socketio = create_app(config.get(os.environ.get('FLASK_ENV', 'development'), config['default']))
 
 if __name__ == '__main__':
     main()

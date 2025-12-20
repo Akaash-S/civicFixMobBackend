@@ -68,23 +68,55 @@ class DevelopmentConfig(Config):
     """Development configuration"""
     DEBUG = True
     TESTING = False
-    # Enable SQL logging in development
+    # Faster timeouts for development
     SQLALCHEMY_ENGINE_OPTIONS = {
         **Config.SQLALCHEMY_ENGINE_OPTIONS,
-        'echo': True
+        'echo': False,  # Disable SQL logging for faster startup
+        'pool_timeout': 5,  # Faster timeout for development
+        'connect_args': {
+            'connect_timeout': 5,  # 5 second connection timeout
+            'options': '-c statement_timeout=10000'  # 10 second query timeout
+        } if 'postgresql' in (Config.DATABASE_URL or '') else {}
     }
 
 class ProductionConfig(Config):
     """Production configuration"""
     DEBUG = False
     TESTING = False
+    
     # Production-optimized database settings
     SQLALCHEMY_ENGINE_OPTIONS = {
         **Config.SQLALCHEMY_ENGINE_OPTIONS,
         'pool_size': 20,
         'max_overflow': 10,
-        'pool_timeout': 30
+        'pool_timeout': 30,
+        'pool_recycle': 3600,  # Recycle connections every hour
+        'connect_args': {
+            'connect_timeout': 10,
+            'options': '-c statement_timeout=30000'  # 30 second query timeout
+        }
     }
+    
+    # Production security settings
+    SESSION_COOKIE_SECURE = True
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    
+    # Enhanced rate limiting for production
+    RATELIMIT_STORAGE_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+    
+    # Production CORS settings (should be more restrictive)
+    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'https://yourdomain.com').split(',')
+    
+    # Production logging
+    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+    
+    # Health check settings
+    HEALTH_CHECK_ENABLED = True
+    
+    # Performance settings
+    SQLALCHEMY_RECORD_QUERIES = False
+    SQLALCHEMY_ECHO = False
 
 class TestingConfig(Config):
     """Testing configuration"""
