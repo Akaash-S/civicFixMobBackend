@@ -35,6 +35,31 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Setup directories and permissions
+setup_directories() {
+    log_info "Setting up directories and permissions..."
+    
+    # Create local logs directory
+    mkdir -p logs
+    chmod 777 logs
+    
+    # Create system logs directory
+    sudo mkdir -p /var/log/civicfix
+    sudo chmod 777 /var/log/civicfix
+    
+    # Set proper permissions for service account file
+    if [ -f "service-account.json" ]; then
+        chmod 644 service-account.json
+    fi
+    
+    # Set proper permissions for environment file
+    if [ -f ".env.production" ]; then
+        chmod 600 .env.production
+    fi
+    
+    log_info "Directories and permissions set up ✓"
+}
+
 # Check prerequisites
 check_prerequisites() {
     log_info "Checking prerequisites..."
@@ -55,6 +80,11 @@ check_prerequisites() {
         sudo systemctl start docker
         sudo systemctl enable docker
     fi
+    
+    # Create logs directory with proper permissions
+    log_info "Setting up logs directory..."
+    mkdir -p logs
+    chmod 777 logs
     
     # Check if production environment file exists
     if [ ! -f ".env.production" ]; then
@@ -100,8 +130,14 @@ create_network() {
 build_image() {
     log_info "Building Docker image..."
     
+    # Clean up any existing containers and images
+    docker stop ${CONTAINER_NAME} 2>/dev/null || true
+    docker rm ${CONTAINER_NAME} 2>/dev/null || true
+    docker rmi ${DOCKER_IMAGE}:${DOCKER_TAG} 2>/dev/null || true
+    
     # Build with build args for production
     docker build \
+        --no-cache \
         --build-arg FLASK_ENV=production \
         --build-arg PORT=5000 \
         -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
@@ -159,6 +195,14 @@ with app.app_context():
 start_container() {
     log_info "Starting production container..."
     
+    # Ensure logs directory exists with proper permissions
+    mkdir -p logs
+    chmod 777 logs
+    
+    # Create host logs directory for volume mounting
+    sudo mkdir -p /var/log/civicfix
+    sudo chmod 777 /var/log/civicfix
+    
     docker run -d \
         --name ${CONTAINER_NAME} \
         --env-file .env.production \
@@ -172,7 +216,8 @@ start_container() {
         --health-timeout=10s \
         --health-retries=3 \
         --health-start-period=40s \
-        -v /var/log/civicfix:/app/logs \
+        -v /var/log/civicfix:/app/logs:rw \
+        -v $(pwd)/service-account.json:/app/service-account.json:ro \
         ${DOCKER_IMAGE}:${DOCKER_TAG}
     
     if [ $? -eq 0 ]; then
@@ -344,6 +389,7 @@ trap cleanup EXIT
 main() {
     log_info "Starting Docker deployment process..."
     
+    setup_directories
     check_prerequisites
     create_network
     build_image
@@ -360,6 +406,7 @@ main() {
     log_info "  - Local: http://localhost:5000"
     log_info "  - Public: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo 'your-ec2-ip')"
     log_info "Health check: http://localhost/health"
+    log_info "Logs: /var/log/civicfix/ and docker logs ${CONTAINER_NAME}"
     
     # Remove trap since deployment succeeded
     trap - EXIT
@@ -390,7 +437,15 @@ case "${1:-deploy}" in
         ;;
     "logs")
         log_info "Showing container logs..."
+        echo "=== Container Logs ==="
         docker logs -f ${CONTAINER_NAME}
+        echo ""
+        echo "=== File Logs (if available) ==="
+        if [ -d "/var/log/civicfix" ]; then
+            tail -f /var/log/civicfix/*.log 2>/dev/null || echo "No file logs available"
+        else
+            echo "File logs directory not found"
+        fi
         ;;
     "status")
         show_status
