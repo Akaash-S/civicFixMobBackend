@@ -33,11 +33,10 @@ instance/
 *.sqlite
 *.sqlite3
 
-# Environment variables
+# Environment variables (keep .env.production for EC2)
 .env
 .env.local
 .env.*.local
-.env.production
 
 # Logs
 logs/
@@ -54,12 +53,9 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Firebase
+# Firebase (keep service-account.json for EC2)
 firebase-service-account.json
 *-firebase-adminsdk-*.json
-
-# Migrations (optional - uncomment if you want to ignore)
-# migrations/
 
 # Testing
 .pytest_cache/
@@ -76,5 +72,29 @@ media/
 *.sqlite
 *.sqlite3
 
+# Development files (not needed in EC2 production)
+test_*.py
+*_test.py
+quick_start*.py
+setup_windows.*
+fix_python_path.py
+verify_*.py
 
-service-account.json
+# Windows specific files (not needed in EC2)
+*.bat
+*.ps1
+
+# Documentation (keep only EC2 specific)
+DEPLOYMENT_*.md
+PRODUCTION_*.md
+SETUP_*.md
+STARTUP_*.md
+WINDOWS_*.md
+
+# EC2 deployment - keep these essential files
+!.env.production
+!service-account.json
+!deploy_ec2.sh
+!setup_ec2.sh
+!monitor_ec2.py
+!AWS_EC2_DEPLOYMENT_GUIDE.md
