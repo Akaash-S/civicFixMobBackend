@@ -69,9 +69,14 @@ def create_app(config_class=Config):
         'engineio_logger': False
     }
     
-    # Use eventlet in production for better performance
+    # Use eventlet in production for better performance (if available)
     if not app.config.get('DEBUG'):
-        socketio_config['async_mode'] = 'eventlet'
+        try:
+            import eventlet
+            socketio_config['async_mode'] = 'eventlet'
+        except ImportError:
+            app.logger.warning("eventlet not available, using threading mode")
+            socketio_config['async_mode'] = 'threading'
     else:
         socketio_config['async_mode'] = 'threading'
     
