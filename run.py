@@ -60,15 +60,24 @@ def main():
         print(f"Failed to start CivicFix backend: {str(e)}")
         sys.exit(1)
 
-# Create application instance for Gunicorn
-def create_wsgi_app():
-    """Create WSGI application for Gunicorn"""
-    env = os.environ.get('FLASK_ENV', 'development')
-    app, socketio = create_app(config.get(env, config['default']))
-    return socketio  # Return socketio app for Gunicorn
+# WSGI application callable for Gunicorn
+class WSGIApplication:
+    """WSGI application wrapper for lazy initialization"""
+    
+    def __init__(self):
+        self._app = None
+    
+    def __call__(self, environ, start_response):
+        if self._app is None:
+            env = os.environ.get('FLASK_ENV', 'development')
+            app, socketio = create_app(config.get(env, config['default']))
+            # For Gunicorn with SocketIO, use the Flask app directly
+            # SocketIO middleware is automatically attached
+            self._app = app
+        return self._app(environ, start_response)
 
 # For Gunicorn: gunicorn run:application
-application = create_wsgi_app()
+application = WSGIApplication()
 
 # For direct execution
 if __name__ == '__main__':
