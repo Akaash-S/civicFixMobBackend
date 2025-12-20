@@ -33,11 +33,14 @@ instance/
 *.sqlite
 *.sqlite3
 
-# Environment variables (keep .env.production for EC2)
+# Environment variables - NEVER commit these files
 .env
 .env.local
 .env.*.local
 .env.production
+.env.staging
+*.env
+!.env.example
 
 # Logs
 logs/
@@ -54,10 +57,11 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Firebase (keep service-account.json for EC2)
+# Firebase - NEVER commit service account files
 firebase-service-account.json
 *-firebase-adminsdk-*.json
 service-account.json
+*service-account*.json
 
 # Testing
 .pytest_cache/
@@ -93,9 +97,7 @@ SETUP_*.md
 STARTUP_*.md
 WINDOWS_*.md
 
-# EC2 deployment - keep these essential files
-!.env.production
-!service-account.json
+# EC2 deployment - keep these essential files but they should not contain secrets
 !deploy_ec2.sh
 !setup_ec2.sh
 !monitor_ec2.py

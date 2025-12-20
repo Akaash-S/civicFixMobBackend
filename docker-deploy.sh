@@ -62,6 +62,7 @@ check_prerequisites() {
         log_info "Creating from template..."
         cp .env.example .env.production
         log_warn "Please edit .env.production with your production settings before continuing."
+        log_warn "IMPORTANT: Never commit .env.production to version control!"
         exit 1
     fi
     
@@ -69,6 +70,14 @@ check_prerequisites() {
     if [ ! -f "service-account.json" ]; then
         log_error "Firebase service account file (service-account.json) not found."
         log_info "Please add your Firebase service account JSON file."
+        log_warn "IMPORTANT: Never commit service-account.json to version control!"
+        exit 1
+    fi
+    
+    # Validate that .env.production doesn't contain placeholder values
+    if grep -q "your-" .env.production; then
+        log_error "Production environment file contains placeholder values."
+        log_info "Please replace all 'your-*' placeholders with actual values in .env.production"
         exit 1
     fi
     

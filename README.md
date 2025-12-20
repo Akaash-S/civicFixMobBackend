@@ -55,7 +55,7 @@ DATABASE_URL=postgresql://username:password@your-rds-endpoint:5432/civicfix
 AWS_ACCESS_KEY_ID=your-aws-access-key
 AWS_SECRET_ACCESS_KEY=your-aws-secret-key
 AWS_REGION=us-east-1
-S3_BUCKET_NAME=civicfix-media-uploads
+S3_BUCKET_NAME=your-s3-bucket-name
 
 # Firebase Configuration
 FIREBASE_SERVICE_ACCOUNT_PATH=firebase-service-account.json
