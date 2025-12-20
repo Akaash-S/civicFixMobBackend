@@ -61,7 +61,15 @@ def main():
         sys.exit(1)
 
 # Create application instance for Gunicorn
-app, socketio = create_app(config.get(os.environ.get('FLASK_ENV', 'development'), config['default']))
+def create_wsgi_app():
+    """Create WSGI application for Gunicorn"""
+    env = os.environ.get('FLASK_ENV', 'development')
+    app, socketio = create_app(config.get(env, config['default']))
+    return socketio  # Return socketio app for Gunicorn
 
+# For Gunicorn: gunicorn run:application
+application = create_wsgi_app()
+
+# For direct execution
 if __name__ == '__main__':
     main()
