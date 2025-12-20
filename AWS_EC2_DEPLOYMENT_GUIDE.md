@@ -25,8 +25,8 @@ This guide will walk you through deploying your CivicFix backend to AWS EC2, int
 ### AWS Account Setup
 - ✅ AWS Account with appropriate permissions
 - ✅ AWS CLI installed and configured
-- ✅ Existing RDS PostgreSQL instance (civicfix-db)
-- ✅ Existing S3 bucket (civicfix-media-uploads)
+- ✅ Existing RDS PostgreSQL instance
+- ✅ Existing S3 bucket for media uploads
 
 ### Local Requirements
 - ✅ SSH key pair for EC2 access
@@ -170,22 +170,22 @@ FLASK_ENV=production
 SECRET_KEY=your-super-secure-production-secret-key-generate-new-one
 
 # Database Configuration (AWS RDS)
-DATABASE_URL=postgresql://civicfix_admin:CivicFixAdmin2025@civicfix-db.ctousuwme9up.ap-south-1.rds.amazonaws.com:5432/civicfix-db
-DB_HOST=civicfix-db.ctousuwme9up.ap-south-1.rds.amazonaws.com
+DATABASE_URL=postgresql://username:password@your-rds-endpoint:5432/database-name
+DB_HOST=your-rds-endpoint
 DB_PORT=5432
-DB_NAME=civicfix-db
-DB_USER=civicfix_admin
-DB_PASSWORD=CivicFixAdmin2025
+DB_NAME=your-database-name
+DB_USER=your-database-user
+DB_PASSWORD=your-database-password
 
 # AWS Configuration
-AWS_ACCESS_KEY_ID=AKIAUT7VVE5BGNNI4A63
-AWS_SECRET_ACCESS_KEY=rBMwRfcu+RevPFE7kqeud/hZECesmC8Y4COOP7rb
-AWS_REGION=ap-south-1
-S3_BUCKET_NAME=civicfix-media-uploads
+AWS_ACCESS_KEY_ID=your-aws-access-key-id
+AWS_SECRET_ACCESS_KEY=your-aws-secret-access-key
+AWS_REGION=your-aws-region
+S3_BUCKET_NAME=your-s3-bucket-name
 
 # Firebase Configuration
 FIREBASE_SERVICE_ACCOUNT_PATH=./service-account.json
-FIREBASE_PROJECT_ID=meeting-assistant-92613
+FIREBASE_PROJECT_ID=your-firebase-project-id
 
 # Redis Configuration (ElastiCache or local Redis)
 REDIS_URL=redis://localhost:6379/0

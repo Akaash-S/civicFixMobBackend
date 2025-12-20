@@ -1,60 +1,138 @@
 version: '3.8'
 
 services:
+  # CivicFix Backend Application
   civicfix-backend:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - FLASK_ENV=production
+    container_name: civicfix-backend-prod
+    restart: unless-stopped
     ports:
       - "5000:5000"
+    env_file:
+      - .env.production
     environment:
-      - FLASK_ENV=development
-      - DATABASE_URL=postgresql://civicfix:password@db:5432/civicfix
+      - FLASK_ENV=production
+      - PORT=5000
       - REDIS_URL=redis://redis:6379/0
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
-      - FIREBASE_SERVICE_ACCOUNT_PATH=/app/firebase-service-account.json
-      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
     volumes:
-      - .:/app
-      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
+      - ./logs:/app/logs
+      - ./service-account.json:/app/service-account.json:ro
+    networks:
+      - civicfix-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
     depends_on:
-      - db
       - redis
-    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.civicfix.rule=Host(`your-domain.com`)"
+      - "traefik.http.services.civicfix.loadbalancer.server.port=5000"
 
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_DB=civicfix
-      - POSTGRES_USER=civicfix
-      - POSTGRES_PASSWORD=password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-
+  # Redis for caching and rate limiting
   redis:
     image: redis:7-alpine
+    container_name: civicfix-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    restart: unless-stopped
+    networks:
+      - civicfix-network
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # Optional: pgAdmin for database management
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    environment:
-      - PGADMIN_DEFAULT_EMAIL=admin@civicfix.com
-      - PGADMIN_DEFAULT_PASSWORD=admin
-    ports:
-      - "8080:80"
-    depends_on:
-      - db
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: civicfix-nginx
     restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    networks:
+      - civicfix-network
+    depends_on:
+      - civicfix-backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: civicfix-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - civicfix-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    profiles:
+      - monitoring
+
+  # Grafana for monitoring dashboards (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: civicfix-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - civicfix-network
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=change-this-admin-password
+      - GF_USERS_ALLOW_SIGN_UP=false
+    profiles:
+      - monitoring
+
+networks:
+  civicfix-network:
+    driver: bridge
+    name: civicfix-network
 
 volumes:
-  postgres_data:
   redis_data:
+    driver: local
+  nginx_logs:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
