@@ -29,13 +29,14 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Copy application code
 COPY . .
 
-# Create non-root user
+# Create non-root user and set up directories
 RUN adduser --disabled-password --gecos '' appuser \
-    && chown -R appuser:appuser /app
-USER appuser
+    && mkdir -p logs \
+    && chown -R appuser:appuser /app \
+    && chmod -R 755 /app \
+    && chmod -R 777 logs
 
-# Create logs directory
-RUN mkdir -p logs
+USER appuser
 
 # Expose port
 EXPOSE $PORT
