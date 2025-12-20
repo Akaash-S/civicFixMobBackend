@@ -103,8 +103,8 @@ class RDSSetup:
         try:
             db_instance_identifier = 'civicfix-db'
             db_name = 'civicfix'
-            master_username = 'civicfix_user'
-            master_password = 'CivicFix2024!'  # Change this!
+            master_username = ''
+            master_password = ''  # Change this!
             
             print("🚀 Creating RDS instance (this may take 10-15 minutes)...")
             

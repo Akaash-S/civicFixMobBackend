@@ -6,15 +6,21 @@ Initializes database tables and seeds initial data
 
 import os
 import sys
+from pathlib import Path
 from flask import Flask
 from flask_migrate import Migrate, init, migrate, upgrade
-from app import create_app
-from app.config import config
-from app.extensions import db
 
 def init_database():
     """Initialize database with migrations"""
     try:
+        # Add current directory to Python path
+        current_dir = Path(__file__).parent
+        sys.path.insert(0, str(current_dir))
+        
+        from app import create_app
+        from app.config import config
+        from app.extensions import db
+        
         # Get environment
         env = os.environ.get('FLASK_ENV', 'development')
         app, socketio = create_app(config.get(env, config['default']))
@@ -23,8 +29,8 @@ def init_database():
             print("🔄 Initializing database...")
             
             # Check if migrations directory exists
-            migrations_dir = 'migrations'
-            if not os.path.exists(migrations_dir):
+            migrations_dir = Path('migrations')
+            if not migrations_dir.exists():
                 print("📁 Creating migrations directory...")
                 from flask_migrate import init
                 init()
@@ -56,17 +62,27 @@ def init_database():
             
     except Exception as e:
         print(f"❌ Database initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def test_database_connection():
     """Test database connection"""
     try:
+        # Add current directory to Python path
+        current_dir = Path(__file__).parent
+        sys.path.insert(0, str(current_dir))
+        
+        from app import create_app
+        from app.config import config
+        from app.extensions import db
+        
         env = os.environ.get('FLASK_ENV', 'development')
         app, socketio = create_app(config.get(env, config['default']))
         
         with app.app_context():
             # Test connection
-            db.engine.execute('SELECT 1')
+            result = db.engine.execute(db.text('SELECT 1')).scalar()
             print("✅ Database connection successful")
             
             # Check tables
@@ -87,6 +103,14 @@ def test_database_connection():
 def create_admin_user():
     """Create an admin user"""
     try:
+        # Add current directory to Python path
+        current_dir = Path(__file__).parent
+        sys.path.insert(0, str(current_dir))
+        
+        from app import create_app
+        from app.config import config
+        from app.extensions import db
+        
         env = os.environ.get('FLASK_ENV', 'development')
         app, socketio = create_app(config.get(env, config['default']))
         
@@ -134,6 +158,7 @@ def main():
     print(f"Environment: {env}")
     
     # Test database connection first
+    print("\n🔍 Testing database connection...")
     if not test_database_connection():
         print("\n❌ Cannot connect to database. Please check your configuration.")
         print("Make sure your .env file has correct database settings.")
@@ -144,9 +169,12 @@ def main():
         return False
     
     # Ask if user wants to create admin
-    create_admin = input("\nDo you want to create an admin user? (y/n): ").lower().strip()
-    if create_admin == 'y':
-        create_admin_user()
+    try:
+        create_admin = input("\nDo you want to create an admin user? (y/n): ").lower().strip()
+        if create_admin == 'y':
+            create_admin_user()
+    except KeyboardInterrupt:
+        print("\nSkipping admin user creation...")
     
     print("\n🎉 Database setup completed!")
     print("\n📋 Next steps:")
