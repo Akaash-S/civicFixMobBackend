@@ -108,6 +108,18 @@ check_prerequisites() {
     if grep -q "your-" .env.production; then
         log_error "Production environment file contains placeholder values."
         log_info "Please replace all 'your-*' placeholders with actual values in .env.production"
+        log_info "Required values:"
+        log_info "  - DATABASE_URL (AWS RDS PostgreSQL)"
+        log_info "  - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET_NAME"
+        log_info "  - FIREBASE_PROJECT_ID"
+        log_info "  - SECRET_KEY (generate with: python3 -c \"import secrets; print(secrets.token_hex(32))\")"
+        exit 1
+    fi
+    
+    # Validate required AWS and database configuration
+    if ! grep -q "postgresql://" .env.production; then
+        log_error "DATABASE_URL must be a PostgreSQL connection string starting with 'postgresql://'"
+        log_info "Example: postgresql://username:password@your-rds-endpoint.rds.amazonaws.com:5432/civicfix_db"
         exit 1
     fi
     

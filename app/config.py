@@ -9,14 +9,11 @@ class Config:
     # Flask
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
     
-    # Database Configuration
+    # Database Configuration - AWS RDS PostgreSQL REQUIRED
     DATABASE_URL = os.environ.get('DATABASE_URL')
     
-    # Handle different PostgreSQL URL formats
-    if DATABASE_URL:
-        if DATABASE_URL.startswith('postgres://'):
-            DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-    else:
+    # Validate that DATABASE_URL is provided
+    if not DATABASE_URL:
         # Build from individual components if DATABASE_URL not provided
         db_host = os.environ.get('DB_HOST')
         db_port = os.environ.get('DB_PORT', '5432')
@@ -26,8 +23,24 @@ class Config:
         
         if all([db_host, db_name, db_user, db_password]):
             DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+        else:
+            raise ValueError(
+                "Database configuration required! Please set DATABASE_URL or "
+                "DB_HOST, DB_NAME, DB_USER, and DB_PASSWORD environment variables."
+            )
     
-    SQLALCHEMY_DATABASE_URI = DATABASE_URL or 'sqlite:///civicfix.db'
+    # Handle different PostgreSQL URL formats
+    if DATABASE_URL.startswith('postgres://'):
+        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+    
+    # Ensure we're using PostgreSQL
+    if not DATABASE_URL.startswith('postgresql://'):
+        raise ValueError(
+            "Only PostgreSQL databases are supported. "
+            "DATABASE_URL must start with 'postgresql://'"
+        )
+    
+    SQLALCHEMY_DATABASE_URI = DATABASE_URL
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
     # Enhanced database configuration for AWS RDS
@@ -40,11 +53,18 @@ class Config:
         'echo': False  # Set to True for SQL debugging
     }
     
-    # AWS Configuration
+    # AWS Configuration - S3 REQUIRED for file storage
     AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
     AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
     AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
     S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
+    
+    # Validate AWS configuration
+    if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET_NAME]):
+        raise ValueError(
+            "AWS configuration required! Please set AWS_ACCESS_KEY_ID, "
+            "AWS_SECRET_ACCESS_KEY, and S3_BUCKET_NAME environment variables."
+        )
     
     # Firebase
     FIREBASE_SERVICE_ACCOUNT_PATH = os.environ.get('FIREBASE_SERVICE_ACCOUNT_PATH')
@@ -122,7 +142,14 @@ class TestingConfig(Config):
     """Testing configuration"""
     DEBUG = True
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    
+    # Override validation for testing
+    def __init__(self):
+        # Skip AWS and DB validation for testing
+        pass
+    
+    # Use in-memory PostgreSQL for testing (requires test database)
+    SQLALCHEMY_DATABASE_URI = os.environ.get('TEST_DATABASE_URL', 'postgresql://test:test@localhost:5432/test_civicfix')
     SQLALCHEMY_ENGINE_OPTIONS = {
         'pool_pre_ping': False,
         'echo': False

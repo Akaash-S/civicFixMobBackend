@@ -123,6 +123,7 @@ def create_app(config_class=Config):
             # Initialize services based on environment
             if not app.config.get('DEBUG'):
                 # Production: Initialize services immediately
+                # Initialize AWS services - REQUIRED for production
                 try:
                     aws_service = AWSService()
                     aws_initialized = aws_service.initialize()
@@ -131,12 +132,11 @@ def create_app(config_class=Config):
                         app.aws_service = aws_service
                         app.logger.info("AWS services initialized for production")
                     else:
-                        app.aws_service = None
-                        app.logger.warning("AWS services not available - file uploads will be disabled")
+                        raise ValueError("AWS S3 services are required for production")
                         
                 except Exception as e:
-                    app.logger.warning(f"AWS initialization failed - file uploads will be disabled: {str(e)}")
-                    app.aws_service = None
+                    app.logger.error(f"AWS initialization failed: {str(e)}")
+                    raise e
                 
                 try:
                     firebase_service = FirebaseService()
