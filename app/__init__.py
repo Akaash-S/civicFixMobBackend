@@ -17,9 +17,15 @@ def get_aws_service(app):
     if not hasattr(app, '_aws_service_initialized'):
         try:
             aws_service = AWSService()
-            aws_service.initialize()
-            app.aws_service = aws_service
-            app.logger.info("AWS services initialized on demand")
+            aws_initialized = aws_service.initialize()
+            
+            if aws_initialized:
+                app.aws_service = aws_service
+                app.logger.info("AWS services initialized on demand")
+            else:
+                app.aws_service = None
+                app.logger.warning("AWS services not available - file uploads will be disabled")
+                
         except Exception as e:
             app.logger.warning(f"AWS services not available: {str(e)}")
             app.aws_service = None
@@ -119,12 +125,18 @@ def create_app(config_class=Config):
                 # Production: Initialize services immediately
                 try:
                     aws_service = AWSService()
-                    aws_service.initialize()
-                    app.aws_service = aws_service
-                    app.logger.info("AWS services initialized for production")
+                    aws_initialized = aws_service.initialize()
+                    
+                    if aws_initialized:
+                        app.aws_service = aws_service
+                        app.logger.info("AWS services initialized for production")
+                    else:
+                        app.aws_service = None
+                        app.logger.warning("AWS services not available - file uploads will be disabled")
+                        
                 except Exception as e:
-                    app.logger.error(f"AWS initialization failed in production: {str(e)}")
-                    raise e
+                    app.logger.warning(f"AWS initialization failed - file uploads will be disabled: {str(e)}")
+                    app.aws_service = None
                 
                 try:
                     firebase_service = FirebaseService()

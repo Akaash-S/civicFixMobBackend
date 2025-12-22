@@ -14,13 +14,27 @@ class AWSService:
         """Initialize AWS services and verify connectivity"""
         try:
             # Get configuration
-            self.bucket_name = current_app.config['S3_BUCKET_NAME']
-            aws_access_key = current_app.config['AWS_ACCESS_KEY_ID']
-            aws_secret_key = current_app.config['AWS_SECRET_ACCESS_KEY']
-            aws_region = current_app.config['AWS_REGION']
+            self.bucket_name = current_app.config.get('S3_BUCKET_NAME')
+            aws_access_key = current_app.config.get('AWS_ACCESS_KEY_ID')
+            aws_secret_key = current_app.config.get('AWS_SECRET_ACCESS_KEY')
+            aws_region = current_app.config.get('AWS_REGION')
             
+            # Check if AWS is configured
             if not all([self.bucket_name, aws_access_key, aws_secret_key]):
-                raise ValueError("Missing required AWS configuration")
+                self.logger.warning("AWS configuration incomplete - S3 services will be disabled")
+                self.logger.warning("Missing: " + ", ".join([
+                    name for name, value in [
+                        ("S3_BUCKET_NAME", self.bucket_name),
+                        ("AWS_ACCESS_KEY_ID", aws_access_key),
+                        ("AWS_SECRET_ACCESS_KEY", aws_secret_key)
+                    ] if not value
+                ]))
+                return False
+            
+            # Check for placeholder values
+            if any("your-" in str(val) for val in [self.bucket_name, aws_access_key, aws_secret_key]):
+                self.logger.warning("AWS configuration contains placeholder values - S3 services will be disabled")
+                return False
             
             # Initialize S3 client
             self.s3_client = boto3.client(
@@ -34,13 +48,21 @@ class AWSService:
             self._ensure_bucket_exists()
             
             self.logger.info(f"AWS S3 initialized successfully with bucket: {self.bucket_name}")
+            return True
             
         except NoCredentialsError:
-            self.logger.error("AWS credentials not found")
-            raise
+            self.logger.warning("AWS credentials not found - S3 services will be disabled")
+            return False
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            if error_code in ['403', 'Forbidden', 'AccessDenied']:
+                self.logger.warning(f"AWS access denied (check credentials and permissions) - S3 services will be disabled: {str(e)}")
+            else:
+                self.logger.warning(f"AWS connection failed - S3 services will be disabled: {str(e)}")
+            return False
         except Exception as e:
-            self.logger.error(f"Failed to initialize AWS services: {str(e)}")
-            raise
+            self.logger.warning(f"Failed to initialize AWS services - S3 services will be disabled: {str(e)}")
+            return False
     
     def _ensure_bucket_exists(self):
         """Ensure S3 bucket exists, create if it doesn't"""
@@ -117,8 +139,15 @@ class AWSService:
         except ClientError as e:
             self.logger.warning(f"Failed to configure bucket security: {str(e)}")
     
+    def is_available(self):
+        """Check if AWS services are available"""
+        return self.s3_client is not None
+    
     def generate_presigned_upload_url(self, file_key, content_type, expiration=3600):
         """Generate presigned URL for file upload"""
+        if not self.is_available():
+            raise RuntimeError("AWS S3 service is not available")
+            
         try:
             response = self.s3_client.generate_presigned_post(
                 Bucket=self.bucket_name,
