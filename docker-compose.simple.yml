@@ -1,5 +1,5 @@
-# CivicFix Backend - AWS-First Docker Compose
-# Requires AWS RDS and S3 - no local services
+# CivicFix Backend - Simple Docker Compose (Backend Only)
+# For testing without nginx reverse proxy
 version: '3.8'
 
 services:
@@ -40,24 +40,3 @@ services:
       timeout: 15s
       retries: 5
       start_period: 60s
-
-  # Nginx Reverse Proxy
-  nginx:
-    image: nginx:alpine
-    container_name: civicfix-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx-clean.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-# No volumes needed - using AWS RDS and S3

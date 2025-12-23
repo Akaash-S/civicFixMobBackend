@@ -164,16 +164,31 @@ create_env_file() {
 
 # Deploy application
 deploy_application() {
-    log_step "Deploying CivicFix Backend..."
+    log_step "Deploying CivicFix Backend with AWS integration..."
     
     # Stop existing containers
-    docker-compose -f docker-compose-clean.yml down 2>/dev/null || true
+    docker-compose down 2>/dev/null || true
     
     # Remove old images
     docker system prune -f
     
+    # Validate AWS setup before deployment
+    log_info "Validating AWS connectivity..."
+    if python validate_aws_setup.py; then
+        log_info "✅ AWS validation passed"
+    else
+        log_warn "⚠️ AWS validation failed - deployment may fail"
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_error "Deployment cancelled"
+            exit 1
+        fi
+    fi
+    
     # Build and start services
-    docker-compose -f docker-compose-clean.yml up -d --build
+    log_info "Building and starting Docker services..."
+    docker-compose up -d --build
     
     log_info "✅ Application deployed successfully"
 }
@@ -182,30 +197,46 @@ deploy_application() {
 verify_deployment() {
     log_step "Verifying deployment..."
     
-    # Wait for services to start
-    sleep 30
+    # Wait for services to start (longer wait for AWS services)
+    sleep 60
     
     # Check container status
     log_info "Container Status:"
-    docker-compose -f docker-compose-clean.yml ps
+    docker-compose ps
     
     # Test health endpoint
     log_info "Testing health endpoint..."
-    if curl -f http://localhost/health > /dev/null 2>&1; then
-        log_info "✅ Health check passed"
-    else
-        log_warn "⚠️ Health check failed - checking direct backend connection..."
-        if curl -f http://localhost:5000/health > /dev/null 2>&1; then
-            log_info "✅ Backend is running (Nginx may need configuration)"
+    max_retries=10
+    for i in $(seq 1 $max_retries); do
+        if curl -f http://localhost/health > /dev/null 2>&1; then
+            log_info "✅ Health check passed"
+            
+            # Show health details
+            health_response=$(curl -s http://localhost/health)
+            echo "Health Status: $health_response"
+            
+            # Check AWS services
+            if echo "$health_response" | grep -q '"database":"healthy"' && echo "$health_response" | grep -q '"s3":"healthy"'; then
+                log_info "✅ AWS RDS and S3 are healthy"
+            else
+                log_warn "⚠️ Some AWS services may not be healthy"
+            fi
+            break
         else
-            log_error "❌ Backend health check failed"
-            return 1
+            log_warn "⏳ Health check attempt $i/$max_retries failed"
+            if [ $i -eq $max_retries ]; then
+                log_error "❌ Health check failed after all retries"
+                log_info "Checking container logs..."
+                docker-compose logs --tail=20 backend
+                return 1
+            fi
+            sleep 15
         fi
-    fi
+    done
     
     # Show logs
     log_info "Recent logs:"
-    docker-compose -f docker-compose-clean.yml logs --tail=10
+    docker-compose logs --tail=10
 }
 
 # Show deployment summary
@@ -224,19 +255,21 @@ show_summary() {
     echo "  - Direct Backend: http://$(curl -s ifconfig.me):5000/"
     echo ""
     echo "🔧 Management Commands:"
-    echo "  - View logs: docker-compose -f docker-compose-clean.yml logs -f"
-    echo "  - Restart: docker-compose -f docker-compose-clean.yml restart"
-    echo "  - Stop: docker-compose -f docker-compose-clean.yml down"
-    echo "  - Update: git pull && docker-compose -f docker-compose-clean.yml up -d --build"
+    echo "  - View logs: docker-compose logs -f"
+    echo "  - Restart: docker-compose restart"
+    echo "  - Stop: docker-compose down"
+    echo "  - Update: git pull && docker-compose up -d --build"
+    echo "  - Validate AWS: python validate_aws_setup.py"
     echo ""
     echo "📁 Application Directory: /opt/civicfix"
     echo "📄 Environment File: .env"
     echo ""
     echo "⚠️ Next Steps:"
-    echo "  1. Update .env file with your actual credentials"
-    echo "  2. Restart services: docker-compose -f docker-compose-clean.yml restart"
-    echo "  3. Test your API endpoints"
-    echo "  4. Configure SSL certificate (optional)"
+    echo "  1. Update .env file with your actual AWS credentials"
+    echo "  2. Validate setup: python validate_aws_setup.py"
+    echo "  3. Restart services: docker-compose restart"
+    echo "  4. Test your API endpoints"
+    echo "  5. Configure SSL certificate (optional)"
     echo ""
 }
 
