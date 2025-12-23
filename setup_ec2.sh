@@ -62,7 +62,7 @@ install_packages() {
         wget \
         unzip \
         nginx \
-        redis-server \
+
         postgresql-client \
         htop \
         tree \
@@ -108,30 +108,7 @@ setup_app_directory() {
     log_info "Application directory created: /opt/civicfix"
 }
 
-# Configure Redis
-configure_redis() {
-    log_step "Configuring Redis..."
-    
-    # Backup original config
-    sudo cp /etc/redis/redis.conf /etc/redis/redis.conf.backup
-    
-    # Configure Redis for production
-    sudo tee -a /etc/redis/redis.conf > /dev/null <<EOF
 
-# CivicFix Production Configuration
-maxmemory 256mb
-maxmemory-policy allkeys-lru
-save 900 1
-save 300 10
-save 60 10000
-EOF
-    
-    # Start and enable Redis
-    sudo systemctl start redis-server
-    sudo systemctl enable redis-server
-    
-    log_info "Redis configured and started"
-}
 
 # Setup firewall
 setup_firewall() {
@@ -165,8 +142,7 @@ create_service_template() {
     sudo tee /etc/systemd/system/civicfix-backend.service > /dev/null <<EOF
 [Unit]
 Description=CivicFix Backend API
-After=network.target redis-server.service
-Wants=redis-server.service
+After=network.target
 
 [Service]
 Type=exec
@@ -358,7 +334,6 @@ echo "Disk Usage: $(df -h / | awk 'NR==2{printf "%s", $5}')"
 # Service status
 echo "Backend Service: $(systemctl is-active civicfix-backend)"
 echo "Nginx Service: $(systemctl is-active nginx)"
-echo "Redis Service: $(systemctl is-active redis-server)"
 
 # Application health
 if curl -f -s http://localhost:5000/health > /dev/null; then
@@ -414,7 +389,6 @@ show_summary() {
     echo "  ✅ System packages updated"
     echo "  ✅ Python 3 and development tools installed"
     echo "  ✅ Nginx web server configured"
-    echo "  ✅ Redis server installed and configured"
     echo "  ✅ Docker installed (optional)"
     echo "  ✅ Firewall configured (UFW)"
     echo "  ✅ Systemd service template created"
@@ -452,7 +426,6 @@ main() {
     install_packages
     install_docker
     setup_app_directory
-    configure_redis
     setup_firewall
     create_service_template
     configure_nginx

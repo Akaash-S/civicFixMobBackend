@@ -1,8 +1,6 @@
 from flask import Flask
 from flask_cors import CORS
 from flask_socketio import SocketIO
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 import logging
 import os
 
@@ -31,9 +29,6 @@ def create_app(config_class=Config):
     db.init_app(app)
     migrate.init_app(app, db)
     ma.init_app(app)
-    
-    # Initialize rate limiter with fallback to memory
-    initialize_rate_limiter(app)
     
     # Initialize Socket.IO
     socketio_config = {
@@ -82,68 +77,6 @@ def create_app(config_class=Config):
     app.logger.info("🌐 Server ready to accept connections")
     
     return app, socketio
-
-def initialize_rate_limiter(app):
-    """Initialize rate limiter with Redis fallback to memory"""
-    try:
-        # Try Redis first if configured
-        redis_url = app.config.get('REDIS_URL')
-        
-        if redis_url and redis_url != 'memory://':
-            app.logger.info("Attempting to connect to Redis for rate limiting...")
-            
-            # Test Redis connection with timeout
-            import redis
-            import time
-            
-            start_time = time.time()
-            timeout = 10  # 10 second timeout for Redis
-            
-            try:
-                # Parse Redis URL and create client with timeout
-                r = redis.from_url(redis_url, socket_connect_timeout=5, socket_timeout=5)
-                r.ping()  # Test connection
-                
-                elapsed = time.time() - start_time
-                if elapsed < timeout:
-                    # Redis is working, use it
-                    limiter = Limiter(
-                        app=app,
-                        key_func=get_remote_address,
-                        storage_uri=redis_url,
-                        default_limits=["1000 per day", "100 per hour"] if not app.config.get('DEBUG') else ["200 per day", "50 per hour"]
-                    )
-                    app.logger.info(f"✅ Rate limiter using Redis in {elapsed:.2f}s")
-                    return limiter
-                else:
-                    raise Exception("Redis connection timeout")
-                    
-            except Exception as redis_error:
-                app.logger.warning(f"⚠️ Redis connection failed: {redis_error}")
-                raise redis_error
-        
-        # Fallback to memory storage
-        app.logger.info("Using memory storage for rate limiting...")
-        limiter = Limiter(
-            app=app,
-            key_func=get_remote_address,
-            storage_uri='memory://',
-            default_limits=["1000 per day", "100 per hour"] if not app.config.get('DEBUG') else ["200 per day", "50 per hour"]
-        )
-        app.logger.info("✅ Rate limiter using memory storage")
-        return limiter
-        
-    except Exception as e:
-        app.logger.warning(f"⚠️ Rate limiter initialization failed: {e}")
-        # Create a minimal limiter that doesn't actually limit
-        limiter = Limiter(
-            app=app,
-            key_func=get_remote_address,
-            storage_uri='memory://',
-            default_limits=[]  # No limits
-        )
-        app.logger.warning("⚠️ Rate limiting disabled")
-        return limiter
 
 def initialize_database(app):
     """Initialize database with timeout - never block server startup"""
@@ -233,6 +166,7 @@ def initialize_services(app):
         firebase_service = FirebaseService()
         firebase_config = {
             'FIREBASE_SERVICE_ACCOUNT_PATH': app.config.get('FIREBASE_SERVICE_ACCOUNT_PATH'),
+            'FIREBASE_SERVICE_ACCOUNT_JSON': app.config.get('FIREBASE_SERVICE_ACCOUNT_JSON'),
             'FIREBASE_PROJECT_ID': app.config.get('FIREBASE_PROJECT_ID')
         }
         

@@ -16,8 +16,7 @@ marshmallow-sqlalchemy==0.29.0
 gunicorn==21.2.0
 psycopg2-binary==2.9.9
 python-socketio==5.10.0
-Flask-Limiter==3.5.0
-redis==5.0.1
+
 
 # Production dependencies
 eventlet==0.33.3

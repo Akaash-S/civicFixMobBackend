@@ -149,7 +149,12 @@ AWS_REGION=<your-aws-region>
 S3_BUCKET_NAME=<your-s3-bucket>
 
 # Firebase Configuration (required for authentication)
-FIREBASE_SERVICE_ACCOUNT_PATH=./service-account.json
+# Option 1: Inline JSON (recommended for deployment)
+FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"your-project-id","private_key_id":"your-key-id","private_key":"-----BEGIN PRIVATE KEY-----\nyour-private-key\n-----END PRIVATE KEY-----\n","client_email":"your-service-account@your-project.iam.gserviceaccount.com","client_id":"your-client-id","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}
+
+# Option 2: File path (alternative)
+# FIREBASE_SERVICE_ACCOUNT_PATH=./service-account.json
+
 FIREBASE_PROJECT_ID=<your-firebase-project-id>
 
 # Redis Configuration
@@ -175,27 +180,45 @@ GUNICORN_TIMEOUT=30
 ```
 
 ### 3.3 Add Firebase Service Account
-```bash
-# Download from Firebase Console:
-# Project Settings → Service Accounts → Generate new private key
-# Save the downloaded JSON file as service-account.json
 
-# Upload to server (if downloading locally first)
+**Option 1: Inline JSON (Recommended)**
+```bash
+# Get your Firebase service account JSON from Firebase Console:
+# Project Settings → Service Accounts → Generate new private key
+
+# Convert the JSON file to a single line:
+cat service-account.json | jq -c .
+
+# Add the single-line JSON to your .env.production file:
+nano .env.production
+
+# Add this line (replace with your actual JSON):
+FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"your-project",...}
+```
+
+**Option 2: File Path (Alternative)**
+```bash
+# Upload service account file to server
 scp service-account.json ubuntu@your-server:/opt/civicfix/backend/
 
 # Or create/edit directly on server
 nano service-account.json
 # Paste your Firebase service account JSON content
+
+# Set in .env.production:
+FIREBASE_SERVICE_ACCOUNT_PATH=./service-account.json
 ```
 
 ### 3.4 Set Secure Permissions
 ```bash
 # Secure environment files
 chmod 600 .env.production
-chmod 600 service-account.json
+
+# If using service account file (optional)
+chmod 600 service-account.json 2>/dev/null || true
 
 # Verify permissions
-ls -la .env.production service-account.json
+ls -la .env.production
 ```
 
 ---

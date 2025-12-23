@@ -2,6 +2,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import logging
 import os
+import json
 import time
 from typing import Optional, Dict, Any
 
@@ -18,6 +19,7 @@ class FirebaseService:
     def initialize(self, config: Dict[str, Any], timeout: int = 30) -> bool:
         """
         Initialize Firebase Admin SDK with timeout - never block server startup
+        Supports both file path and inline JSON credentials
         
         Args:
             config: Firebase configuration dictionary
@@ -32,36 +34,81 @@ class FirebaseService:
         start_time = time.time()
         
         try:
-            logger.info(f"Initializing Firebase services (timeout: {timeout}s)...")
+            self.logger.info(f"Initializing Firebase services (timeout: {timeout}s)...")
             
             service_account_path = config.get('FIREBASE_SERVICE_ACCOUNT_PATH')
+            service_account_json = config.get('FIREBASE_SERVICE_ACCOUNT_JSON')
             project_id = config.get('FIREBASE_PROJECT_ID')
             
-            # Quick validation
-            if not service_account_path or not os.path.exists(service_account_path):
-                logger.warning(f"Firebase service account file not found: {service_account_path} - Firebase disabled")
+            # Determine credential source
+            cred = None
+            
+            if service_account_json:
+                # Use inline JSON credentials (preferred for deployment)
+                try:
+                    if isinstance(service_account_json, str):
+                        service_account_data = json.loads(service_account_json)
+                    else:
+                        service_account_data = service_account_json
+                    
+                    # Validate required fields
+                    required_fields = ['type', 'project_id', 'private_key', 'client_email']
+                    if not all(field in service_account_data for field in required_fields):
+                        self.logger.warning("Firebase service account JSON missing required fields - Firebase disabled")
+                        self._initialized = True
+                        return False
+                    
+                    # Check for placeholder values
+                    if any("placeholder" in str(service_account_data.get(field, "")) for field in required_fields):
+                        self.logger.warning("Firebase service account contains placeholder values - Firebase disabled")
+                        self._initialized = True
+                        return False
+                    
+                    cred = credentials.Certificate(service_account_data)
+                    self.logger.info("Using inline Firebase service account JSON")
+                    
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"Invalid Firebase service account JSON: {e} - Firebase disabled")
+                    self._initialized = True
+                    return False
+                    
+            elif service_account_path:
+                # Use file path credentials (fallback)
+                if not os.path.exists(service_account_path):
+                    self.logger.warning(f"Firebase service account file not found: {service_account_path} - Firebase disabled")
+                    self._initialized = True
+                    return False
+                
+                try:
+                    cred = credentials.Certificate(service_account_path)
+                    self.logger.info(f"Using Firebase service account file: {service_account_path}")
+                except Exception as e:
+                    self.logger.warning(f"Invalid Firebase service account file: {e} - Firebase disabled")
+                    self._initialized = True
+                    return False
+            else:
+                self.logger.warning("No Firebase service account configured (neither JSON nor file path) - Firebase disabled")
                 self._initialized = True
                 return False
             
             if not project_id:
-                logger.warning("FIREBASE_PROJECT_ID not configured - Firebase disabled")
+                self.logger.warning("FIREBASE_PROJECT_ID not configured - Firebase disabled")
                 self._initialized = True
                 return False
             
-            # Check for placeholder values
-            if "your-" in str(project_id):
-                logger.warning("Firebase configuration contains placeholder values - Firebase disabled")
+            # Check for placeholder values in project ID
+            if "your-" in str(project_id) or "placeholder" in str(project_id):
+                self.logger.warning("Firebase project ID contains placeholder values - Firebase disabled")
                 self._initialized = True
                 return False
             
             # Initialize Firebase Admin SDK with timeout check
             elapsed = time.time() - start_time
             if elapsed >= timeout:
-                logger.warning(f"Firebase initialization timeout ({timeout}s) - skipping")
+                self.logger.warning(f"Firebase initialization timeout ({timeout}s) - skipping")
                 self._initialized = True
                 return False
             
-            cred = credentials.Certificate(service_account_path)
             self.app = firebase_admin.initialize_app(cred, {
                 'projectId': project_id
             })
@@ -69,7 +116,7 @@ class FirebaseService:
             # Quick verification with timeout
             elapsed = time.time() - start_time
             if elapsed >= timeout:
-                logger.warning(f"Firebase verification timeout ({timeout}s) - skipping verification")
+                self.logger.warning(f"Firebase verification timeout ({timeout}s) - skipping verification")
                 self._available = True  # Assume it works
                 self._initialized = True
                 return True
@@ -77,19 +124,21 @@ class FirebaseService:
             # Verify connectivity (quick test)
             try:
                 auth.list_users(max_results=1)
-                logger.info(f"Firebase Admin SDK initialized and verified in {elapsed:.2f}s")
+                elapsed = time.time() - start_time
+                self.logger.info(f"Firebase Admin SDK initialized and verified in {elapsed:.2f}s")
             except Exception as e:
-                logger.info(f"Firebase Admin SDK initialized (verification skipped): {e}")
+                elapsed = time.time() - start_time
+                self.logger.info(f"Firebase Admin SDK initialized (verification skipped): {e}")
             
-            elapsed = time.time() - start_time
             self._available = True
             self._initialized = True
-            logger.info(f"Firebase services initialized successfully in {elapsed:.2f}s")
+            elapsed = time.time() - start_time
+            self.logger.info(f"Firebase services initialized successfully in {elapsed:.2f}s")
             return True
             
         except Exception as e:
             elapsed = time.time() - start_time
-            logger.warning(f"Firebase initialization failed after {elapsed:.2f}s: {e}")
+            self.logger.warning(f"Firebase initialization failed after {elapsed:.2f}s: {e}")
             self._initialized = True
             self._available = False
             return False

@@ -31,29 +31,11 @@ if [ ! -f ".env.production" ]; then
     log_warn ".env.production not found, creating from template..."
     cp .env.example .env.production
     
-    # Set memory storage by default
-    sed -i 's/REDIS_URL=redis:\/\/localhost:6379\/0/REDIS_URL=memory:\/\//' .env.production
+    # Set production environment
+    sed -i 's/FLASK_ENV=development/FLASK_ENV=production/' .env.production
     
     log_warn "Please edit .env.production with your actual credentials"
-    log_info "Using memory storage for rate limiting (Redis optional)"
-fi
-
-# Check if service account exists
-if [ ! -f "service-account.json" ]; then
-    log_warn "service-account.json not found, creating placeholder..."
-    cat > service-account.json << 'EOF'
-{
-  "type": "service_account",
-  "project_id": "placeholder-project",
-  "private_key_id": "placeholder",
-  "private_key": "-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n",
-  "client_email": "placeholder@placeholder.iam.gserviceaccount.com",
-  "client_id": "placeholder",
-  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-  "token_uri": "https://oauth2.googleapis.com/token"
-}
-EOF
-    log_warn "Please replace service-account.json with your actual Firebase service account"
+    log_info "Firebase credentials should be set as FIREBASE_SERVICE_ACCOUNT_JSON in .env.production"
 fi
 
 # Stop existing containers
@@ -71,16 +53,7 @@ chmod 777 logs
 # Build and start services
 log_info "Building and starting services..."
 
-# Start Redis first (optional)
-log_info "Starting Redis (optional service)..."
-docker-compose up -d redis || {
-    log_warn "Redis failed to start - backend will use memory storage"
-}
-
-# Wait a moment for Redis to start
-sleep 5
-
-# Start backend (will work with or without Redis)
+# Start backend application
 log_info "Starting backend application..."
 docker-compose up -d civicfix-backend
 
@@ -137,11 +110,9 @@ echo "  - Nginx:   http://localhost (if running)"
 echo ""
 log_info "Service Status Summary:"
 backend_status=$(docker inspect civicfix-backend-prod --format='{{.State.Status}}' 2>/dev/null || echo "not found")
-redis_status=$(docker inspect civicfix-redis --format='{{.State.Status}}' 2>/dev/null || echo "not found")
 nginx_status=$(docker inspect civicfix-nginx --format='{{.State.Status}}' 2>/dev/null || echo "not found")
 
 echo "  Backend: $backend_status"
-echo "  Redis:   $redis_status"
 echo "  Nginx:   $nginx_status"
 
 if [ "$backend_status" = "running" ]; then

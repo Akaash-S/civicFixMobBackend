@@ -15,10 +15,8 @@ services:
     environment:
       - FLASK_ENV=production
       - PORT=5000
-      - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./logs:/app/logs:rw
-      - ./service-account.json:/app/service-account.json:ro
     networks:
       - civicfix-network
     healthcheck:
@@ -35,29 +33,10 @@ services:
         reservations:
           memory: 256M
           cpus: '0.5'
-    # Remove depends_on so backend can start without Redis
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.civicfix.rule=Host(`your-domain.com`)"
       - "traefik.http.services.civicfix.loadbalancer.server.port=5000"
-
-  # Redis for caching and rate limiting
-  redis:
-    image: redis:7-alpine
-    container_name: civicfix-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - civicfix-network
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   # Nginx Reverse Proxy
   nginx:
@@ -125,8 +104,6 @@ networks:
     name: civicfix-network
 
 volumes:
-  redis_data:
-    driver: local
   nginx_logs:
     driver: local
   prometheus_data:
