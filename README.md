@@ -1,25 +1,42 @@
 # CivicFix Backend - Clean Production Ready
 
 ## 🎯 Overview
-Clean, single-file Flask backend ready for AWS EC2 Docker deployment.
+Production-ready Flask backend using **AWS RDS PostgreSQL** and **AWS S3** for all environments (development and production).
 
 ## 📁 Essential Files
-- `app.py` - Main Flask application (complete backend)
-- `requirements-clean.txt` - Minimal dependencies
+- `app.py` - Main Flask application (AWS-integrated backend)
+- `requirements-clean.txt` - Dependencies including boto3
 - `Dockerfile` - Production Docker image
-- `docker-compose.yml` - Full deployment stack
+- `docker-compose.yml` - AWS-integrated deployment stack
 - `nginx-clean.conf` - Reverse proxy configuration
 - `deploy-aws-ec2.sh` - Automated AWS EC2 deployment
 - `test-api-endpoints.py` - API testing script
 - `verify-deployment.py` - Deployment verification script
-- `.env-clean` - Environment template
+- `AWS_SETUP_GUIDE.md` - Complete AWS setup guide
+- `.env-clean` - Environment template (all variables required)
 
 ## 🚀 Quick Start
 
+### Prerequisites
+- AWS Account with RDS and S3 configured
+- AWS credentials (Access Key ID and Secret Access Key)
+- PostgreSQL database on AWS RDS
+- S3 bucket for file storage
+
 ### Local Development
 ```bash
+# Copy and configure environment
+cp .env-clean .env
+# Edit .env with your AWS credentials and endpoints
+
+# Install dependencies
+pip install -r requirements-clean.txt
+
+# Run application
 python app.py
-python test-api-endpoints.py  # Test all endpoints
+
+# Test all endpoints
+python test-api-endpoints.py
 ```
 
 ### Docker Deployment
@@ -37,12 +54,41 @@ python verify-deployment.py http://your-ec2-ip
 ```
 
 ## 🔧 Environment Setup
-Copy `.env-clean` to `.env` and update with your values:
-- `SECRET_KEY` - Generate secure key
-- `DB_PASSWORD` - Database password
-- `FIREBASE_SERVICE_ACCOUNT_B64` - Base64 Firebase credentials
-- `FIREBASE_PROJECT_ID` - Firebase project ID
-- `CORS_ORIGINS` - Allowed origins (comma-separated or *)
+**All environment variables are REQUIRED** - no fallbacks to local services.
+
+### Required AWS Configuration
+- `SECRET_KEY` - Generate secure key (required)
+- `DATABASE_URL` - AWS RDS PostgreSQL connection string (required)
+- `AWS_ACCESS_KEY_ID` - AWS access key (required)
+- `AWS_SECRET_ACCESS_KEY` - AWS secret key (required)
+- `AWS_S3_BUCKET_NAME` - S3 bucket for file storage (required)
+- `AWS_REGION` - AWS region (required, e.g., us-east-1)
+
+### Required Firebase Configuration
+- `FIREBASE_SERVICE_ACCOUNT_B64` - Base64 Firebase credentials (required)
+- `FIREBASE_PROJECT_ID` - Firebase project ID (required)
+
+### Optional Configuration
+- `CORS_ORIGINS` - Allowed origins (default: *)
+- `FLASK_ENV` - Environment mode (development/production)
+
+### AWS Setup Required
+1. **RDS PostgreSQL Database**
+   - Create RDS PostgreSQL instance
+   - Configure security groups for access
+   - Get connection string for DATABASE_URL
+
+2. **S3 Bucket**
+   - Create S3 bucket for file storage
+   - Configure bucket policy for public read access
+   - Set up CORS policy for web uploads
+
+3. **IAM User**
+   - Create IAM user with S3 and RDS permissions
+   - Generate access keys
+   - Update AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+
+**⚠️ Important:** The application will not start without proper AWS configuration.
 
 ## 📚 API Documentation
 
@@ -58,6 +104,10 @@ Copy `.env-clean` to `.env` and update with your values:
 - `DELETE /api/v1/issues/{id}` - Delete issue (auth required)
 - `PUT /api/v1/issues/{id}/status` - Update issue status (auth required)
 - `GET /api/v1/issues/nearby` - Get nearby issues (lat, lng, radius)
+
+### File Upload (AWS S3)
+- `POST /api/v1/upload` - Upload single file (auth required)
+- `POST /api/v1/upload/multiple` - Upload multiple files (auth required)
 
 ### User Management
 - `GET /api/v1/users/me` - Get current user (auth required)
@@ -82,14 +132,18 @@ Copy `.env-clean` to `.env` and update with your values:
 - Firebase Authentication with fallback for development
 
 ## ✅ Features
+- **AWS-First Architecture** - No local fallbacks, cloud-native design
+- **AWS RDS PostgreSQL** - Production database for all environments
+- **AWS S3 File Storage** - Scalable image storage with public URLs
 - Complete REST API for CivicFix
-- Firebase Authentication with mock fallback
-- PostgreSQL database with SQLAlchemy ORM
+- Firebase Authentication integration
 - Docker containerization with health checks
 - Nginx reverse proxy with rate limiting
 - CORS configuration for frontend integration
-- Comprehensive error handling
-- Logging and monitoring
+- **Multi-image support** for issues
+- **File upload validation** (type, size limits)
+- **Environment validation** - Fails fast if AWS not configured
+- Comprehensive error handling and logging
 - Production-ready security headers
 
 ## 🎉 Ready for Production!

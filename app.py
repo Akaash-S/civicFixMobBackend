@@ -12,15 +12,30 @@ from flask_cors import CORS
 from flask_migrate import Migrate
 import json
 import base64
+import boto3
+from botocore.exceptions import ClientError
+import uuid
+from werkzeug.utils import secure_filename
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, use system environment variables
 
 # Initialize Flask app
 app = Flask(__name__)
 
 # Configuration
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-change-in-production')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
+if not app.config['SECRET_KEY']:
+    raise ValueError("SECRET_KEY environment variable is required")
 
-# Database configuration - flexible for development and production
-database_url = os.environ.get('DATABASE_URL', 'sqlite:///civicfix.db')
+# Database configuration - AWS RDS PostgreSQL only
+database_url = os.environ.get('DATABASE_URL')
+if not database_url:
+    raise ValueError("DATABASE_URL environment variable is required for AWS RDS connection")
 
 # Handle PostgreSQL URL format
 if database_url.startswith('postgres://'):
@@ -45,6 +60,87 @@ else:
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ================================
+# AWS S3 Configuration
+# ================================
+
+class S3Service:
+    def __init__(self):
+        self.s3_client = None
+        self.bucket_name = os.environ.get('AWS_S3_BUCKET_NAME')
+        self.region = os.environ.get('AWS_REGION', 'us-east-1')
+        
+        # Require AWS credentials for both development and production
+        if not self.bucket_name:
+            raise ValueError("AWS_S3_BUCKET_NAME environment variable is required")
+        
+        self.init_s3()
+    
+    def init_s3(self):
+        """Initialize S3 client"""
+        try:
+            # AWS credentials from environment variables (required)
+            aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+            aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+            
+            if not aws_access_key or not aws_secret_key:
+                raise ValueError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables are required")
+            
+            self.s3_client = boto3.client(
+                's3',
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                region_name=self.region
+            )
+            
+            # Test S3 connection
+            self.s3_client.head_bucket(Bucket=self.bucket_name)
+            logger.info(f"S3 client initialized successfully for bucket: {self.bucket_name}")
+            
+        except Exception as e:
+            logger.error(f"S3 initialization failed: {e}")
+            raise ValueError(f"Failed to initialize S3: {e}")
+    
+    def upload_file(self, file_data, file_name, content_type='application/octet-stream'):
+        """Upload file to S3 bucket"""
+        try:
+            # Generate unique filename
+            file_extension = file_name.split('.')[-1] if '.' in file_name else ''
+            unique_filename = f"issues/{uuid.uuid4()}.{file_extension}" if file_extension else f"issues/{uuid.uuid4()}"
+            
+            # Upload file
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=unique_filename,
+                Body=file_data,
+                ContentType=content_type,
+                ACL='public-read'  # Make file publicly accessible
+            )
+            
+            # Generate public URL
+            file_url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{unique_filename}"
+            return file_url, None
+            
+        except ClientError as e:
+            logger.error(f"S3 upload failed: {e}")
+            return None, str(e)
+    
+    def delete_file(self, file_url):
+        """Delete file from S3 bucket"""
+        try:
+            # Extract key from URL
+            if f"{self.bucket_name}.s3." in file_url:
+                key = file_url.split(f"{self.bucket_name}.s3.{self.region}.amazonaws.com/")[1]
+                self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
+                return True
+        except Exception as e:
+            logger.error(f"S3 delete failed: {e}")
+        
+        return False
+
+# Initialize S3 service
+s3_service = S3Service()
 
 # ================================
 # Models
@@ -87,10 +183,35 @@ class Issue(db.Model):
     latitude = db.Column(db.Float, nullable=False)
     longitude = db.Column(db.Float, nullable=False)
     address = db.Column(db.String(500))
-    image_url = db.Column(db.String(500))
+    # Support both old and new schema
+    image_url = db.Column(db.String(500))  # Legacy field
+    image_urls = db.Column(db.Text)  # New field - JSON array of image URLs
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def get_image_urls(self):
+        """Get image URLs as list"""
+        # Try new field first
+        if self.image_urls:
+            try:
+                return json.loads(self.image_urls)
+            except:
+                return []
+        # Fallback to legacy field
+        elif self.image_url:
+            return [self.image_url]
+        return []
+    
+    def set_image_urls(self, urls):
+        """Set image URLs from list"""
+        if urls:
+            self.image_urls = json.dumps(urls)
+            # Also set first URL as legacy field for backward compatibility
+            self.image_url = urls[0] if urls else None
+        else:
+            self.image_urls = None
+            self.image_url = None
     
     def to_dict(self):
         return {
@@ -103,7 +224,7 @@ class Issue(db.Model):
             'latitude': self.latitude,
             'longitude': self.longitude,
             'address': self.address,
-            'image_url': self.image_url,
+            'image_urls': self.get_image_urls(),
             'created_by': self.created_by,
             'creator_name': self.creator.name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -254,15 +375,147 @@ def health():
     # Check Firebase status
     firebase_status = 'healthy' if getattr(app, '_firebase_auth', False) else 'disabled'
     
+    # Check S3 status
+    try:
+        s3_service.s3_client.head_bucket(Bucket=s3_service.bucket_name)
+        s3_status = 'healthy'
+    except Exception as e:
+        s3_status = f'unhealthy: {str(e)}'
+    
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat(),
         'version': '2.0.0',
         'services': {
             'database': db_status,
-            'firebase': firebase_status
+            'firebase': firebase_status,
+            's3': s3_status
         }
     })
+
+# ================================
+# File Upload Routes
+# ================================
+
+@app.route('/api/v1/upload', methods=['POST'])
+@require_auth
+def upload_file(current_user):
+    """Upload file to S3"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # Validate file type
+        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+        file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+        
+        if file_extension not in allowed_extensions:
+            return jsonify({'error': 'Invalid file type. Allowed: png, jpg, jpeg, gif, webp'}), 400
+        
+        # Validate file size (max 5MB)
+        file.seek(0, 2)  # Seek to end
+        file_size = file.tell()
+        file.seek(0)  # Reset to beginning
+        
+        if file_size > 5 * 1024 * 1024:  # 5MB
+            return jsonify({'error': 'File too large. Maximum size: 5MB'}), 400
+        
+        # Upload to S3
+        file_data = file.read()
+        content_type = file.content_type or 'image/jpeg'
+        
+        file_url, error = s3_service.upload_file(file_data, file.filename, content_type)
+        
+        if error:
+            return jsonify({'error': f'Upload failed: {error}'}), 500
+        
+        logger.info(f"File uploaded by user {current_user.email}: {file_url}")
+        
+        return jsonify({
+            'message': 'File uploaded successfully',
+            'file_url': file_url,
+            'file_name': file.filename,
+            'file_size': file_size
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error uploading file: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/upload/multiple', methods=['POST'])
+@require_auth
+def upload_multiple_files(current_user):
+    """Upload multiple files to S3"""
+    try:
+        if 'files' not in request.files:
+            return jsonify({'error': 'No files provided'}), 400
+        
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No files selected'}), 400
+        
+        # Limit number of files
+        if len(files) > 5:
+            return jsonify({'error': 'Maximum 5 files allowed'}), 400
+        
+        uploaded_files = []
+        errors = []
+        
+        for file in files:
+            if file.filename == '':
+                continue
+            
+            try:
+                # Validate file type
+                allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+                file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+                
+                if file_extension not in allowed_extensions:
+                    errors.append(f"{file.filename}: Invalid file type")
+                    continue
+                
+                # Validate file size
+                file.seek(0, 2)
+                file_size = file.tell()
+                file.seek(0)
+                
+                if file_size > 5 * 1024 * 1024:  # 5MB
+                    errors.append(f"{file.filename}: File too large")
+                    continue
+                
+                # Upload to S3
+                file_data = file.read()
+                content_type = file.content_type or 'image/jpeg'
+                
+                file_url, error = s3_service.upload_file(file_data, file.filename, content_type)
+                
+                if error:
+                    errors.append(f"{file.filename}: Upload failed - {error}")
+                else:
+                    uploaded_files.append({
+                        'file_url': file_url,
+                        'file_name': file.filename,
+                        'file_size': file_size
+                    })
+                
+            except Exception as e:
+                errors.append(f"{file.filename}: {str(e)}")
+        
+        logger.info(f"Multiple files uploaded by user {current_user.email}: {len(uploaded_files)} successful")
+        
+        return jsonify({
+            'message': f'{len(uploaded_files)} files uploaded successfully',
+            'uploaded_files': uploaded_files,
+            'errors': errors
+        }), 201 if uploaded_files else 400
+        
+    except Exception as e:
+        logger.error(f"Error uploading multiple files: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
 # Issue Routes
@@ -339,10 +592,23 @@ def create_issue(current_user):
             latitude=float(data['latitude']),
             longitude=float(data['longitude']),
             address=data.get('address', ''),
-            image_url=data.get('image_url', ''),
             priority=data.get('priority', 'MEDIUM'),
             created_by=current_user.id
         )
+        
+        # Handle image URLs (can be single URL or array of URLs)
+        image_urls = data.get('image_urls', [])
+        if isinstance(image_urls, str):
+            image_urls = [image_urls]
+        elif not isinstance(image_urls, list):
+            image_urls = []
+        
+        # Also support legacy image_url field
+        if 'image_url' in data and data['image_url']:
+            if data['image_url'] not in image_urls:
+                image_urls.append(data['image_url'])
+        
+        issue.set_image_urls(image_urls)
         
         db.session.add(issue)
         db.session.commit()
@@ -471,8 +737,21 @@ def update_issue(current_user, issue_id):
             issue.priority = data['priority']
         if 'address' in data:
             issue.address = data['address']
-        if 'image_url' in data:
-            issue.image_url = data['image_url']
+        
+        # Handle image URLs update
+        if 'image_urls' in data:
+            image_urls = data['image_urls']
+            if isinstance(image_urls, str):
+                image_urls = [image_urls]
+            elif not isinstance(image_urls, list):
+                image_urls = []
+            issue.set_image_urls(image_urls)
+        elif 'image_url' in data:
+            # Support legacy single image_url
+            if data['image_url']:
+                issue.set_image_urls([data['image_url']])
+            else:
+                issue.set_image_urls([])
         
         issue.updated_at = datetime.utcnow()
         db.session.commit()
