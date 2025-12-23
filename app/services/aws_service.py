@@ -1,67 +1,127 @@
+"""
+Production-safe AWS Service - Fixed recursion issues
+"""
+
 import boto3
 import logging
+import threading
+from typing import Optional, Dict, Any
 from botocore.exceptions import ClientError, NoCredentialsError
-from flask import current_app
-from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+class AWSServiceError(Exception):
+    pass
 
 class AWSService:
-    def __init__(self):
-        self.s3_client = None
-        self.bucket_name = None
-        self.logger = logging.getLogger(__name__)
+    _instance: Optional['AWSService'] = None
+    _lock = threading.Lock()
+    _initialized = False
     
-    def initialize(self):
-        """Initialize AWS services and verify connectivity - REQUIRED for production"""
+    def __new__(cls) -> 'AWSService':
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+            
+        self.s3_client: Optional[boto3.client] = None
+        self.bucket_name: Optional[str] = None
+        self.region: Optional[str] = None
+        self._initialized = True
+    
+    def initialize(self, config: Dict[str, Any]) -> bool:
+        """Initialize AWS services - no recursion"""
         try:
-            # Get configuration
-            self.bucket_name = current_app.config.get('S3_BUCKET_NAME')
-            aws_access_key = current_app.config.get('AWS_ACCESS_KEY_ID')
-            aws_secret_key = current_app.config.get('AWS_SECRET_ACCESS_KEY')
-            aws_region = current_app.config.get('AWS_REGION')
+            self.bucket_name = config.get('S3_BUCKET_NAME')
+            self.region = config.get('AWS_REGION', 'us-east-1')
+            access_key = config.get('AWS_ACCESS_KEY_ID')
+            secret_key = config.get('AWS_SECRET_ACCESS_KEY')
             
-            # AWS is required - no graceful fallback
-            if not all([self.bucket_name, aws_access_key, aws_secret_key]):
-                missing = [
-                    name for name, value in [
-                        ("S3_BUCKET_NAME", self.bucket_name),
-                        ("AWS_ACCESS_KEY_ID", aws_access_key),
-                        ("AWS_SECRET_ACCESS_KEY", aws_secret_key)
-                    ] if not value
-                ]
-                raise ValueError(f"AWS configuration required! Missing: {', '.join(missing)}")
+            if not self.bucket_name:
+                raise AWSServiceError("S3_BUCKET_NAME is required")
             
-            # Check for placeholder values
-            if any("your-" in str(val) for val in [self.bucket_name, aws_access_key, aws_secret_key]):
-                raise ValueError("AWS configuration contains placeholder values. Please set real AWS credentials.")
+            # Create S3 client
+            if access_key and secret_key:
+                self.s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=access_key,
+                    aws_secret_access_key=secret_key,
+                    region_name=self.region
+                )
+            else:
+                # Use default credential chain (IAM role)
+                self.s3_client = boto3.client('s3', region_name=self.region)
             
-            # Initialize S3 client
-            self.s3_client = boto3.client(
-                's3',
-                aws_access_key_id=aws_access_key,
-                aws_secret_access_key=aws_secret_key,
-                region_name=aws_region
-            )
+            # Test connection
+            self.s3_client.head_bucket(Bucket=self.bucket_name)
             
-            # Verify S3 connectivity and bucket - REQUIRED
-            self._ensure_bucket_exists()
-            
-            self.logger.info(f"AWS S3 initialized successfully with bucket: {self.bucket_name}")
+            logger.info(f"AWS S3 initialized: {self.bucket_name}")
             return True
             
-        except NoCredentialsError as e:
-            self.logger.error("AWS credentials not found")
-            raise ValueError("AWS credentials are required for this application") from e
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            if error_code in ['403', 'Forbidden', 'AccessDenied']:
-                self.logger.error(f"AWS access denied - check credentials and permissions: {str(e)}")
-                raise ValueError("AWS access denied. Check your credentials and S3 permissions.") from e
-            else:
-                self.logger.error(f"AWS connection failed: {str(e)}")
-                raise ValueError(f"Failed to connect to AWS S3: {str(e)}") from e
         except Exception as e:
-            self.logger.error(f"Failed to initialize AWS services: {str(e)}")
-            raise ValueError(f"AWS S3 initialization failed: {str(e)}") from e
+            logger.error(f"AWS initialization failed: {e}")
+            self._cleanup()
+            raise AWSServiceError(f"AWS init failed: {e}") from e
+    
+    def _cleanup(self):
+        self.s3_client = None
+        self.bucket_name = None
+    
+    def is_available(self) -> bool:
+        return self.s3_client is not None and self.bucket_name is not None
+    
+    def generate_presigned_upload_url(self, file_key: str, content_type: str, expiration: int = 3600) -> Dict[str, Any]:
+        if not self.is_available():
+            raise AWSServiceError("AWS S3 service not available")
+            
+        try:
+            response = self.s3_client.generate_presigned_post(
+                Bucket=self.bucket_name,
+                Key=file_key,
+                Fields={'Content-Type': content_type},
+                Conditions=[
+                    {'Content-Type': content_type},
+                    ['content-length-range', 1, 16777216]
+                ],
+                ExpiresIn=expiration
+            )
+            
+            return {
+                'upload_url': response['url'],
+                'fields': response['fields'],
+                'file_url': f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{file_key}"
+            }
+            
+        except ClientError as e:
+            raise AWSServiceError(f"Failed to generate upload URL: {e}") from e
+    
+    def generate_presigned_download_url(self, file_key: str, expiration: int = 3600) -> str:
+        if not self.is_available():
+            raise AWSServiceError("AWS S3 service not available")
+            
+        try:
+            return self.s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.bucket_name, 'Key': file_key},
+                ExpiresIn=expiration
+            )
+        except ClientError as e:
+            raise AWSServiceError(f"Failed to generate download URL: {e}") from e
+    
+    def delete_file(self, file_key: str) -> bool:
+        if not self.is_available():
+            return False
+            
+        try:
+            self.s3_client.delete_object(Bucket=self.bucket_name, Key=file_key)
+            return True
+        except ClientError:
+            return False
     
     def _ensure_bucket_exists(self):
         """Ensure S3 bucket exists, create if it doesn't"""

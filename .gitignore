@@ -57,11 +57,8 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Firebase - NEVER commit service account files
-firebase-service-account.json
-*-firebase-adminsdk-*.json
+
 service-account.json
-*service-account*.json
 
 # Testing
 .pytest_cache/

@@ -13,24 +13,8 @@ from app.services.firebase_service import FirebaseService
 from app.utils.logger import setup_logging
 
 def get_aws_service(app):
-    """Lazy initialization of AWS service"""
-    if not hasattr(app, '_aws_service_initialized'):
-        try:
-            aws_service = AWSService()
-            aws_initialized = aws_service.initialize()
-            
-            if aws_initialized:
-                app.aws_service = aws_service
-                app.logger.info("AWS services initialized on demand")
-            else:
-                app.aws_service = None
-                app.logger.warning("AWS services not available - file uploads will be disabled")
-                
-        except Exception as e:
-            app.logger.warning(f"AWS services not available: {str(e)}")
-            app.aws_service = None
-        app._aws_service_initialized = True
-    return app.aws_service
+    """Get AWS service instance - no recursion"""
+    return getattr(app, 'aws_service', None)
 
 def get_firebase_service(app):
     """Lazy initialization of Firebase service"""
@@ -123,16 +107,21 @@ def create_app(config_class=Config):
             # Initialize services based on environment
             if not app.config.get('DEBUG'):
                 # Production: Initialize services immediately
-                # Initialize AWS services - REQUIRED for production
+                # Initialize AWS services - no recursion
                 try:
                     aws_service = AWSService()
-                    aws_initialized = aws_service.initialize()
                     
-                    if aws_initialized:
-                        app.aws_service = aws_service
-                        app.logger.info("AWS services initialized for production")
-                    else:
-                        raise ValueError("AWS S3 services are required for production")
+                    # Prepare config dict (no Flask context needed)
+                    aws_config = {
+                        'S3_BUCKET_NAME': app.config.get('S3_BUCKET_NAME'),
+                        'AWS_REGION': app.config.get('AWS_REGION'),
+                        'AWS_ACCESS_KEY_ID': app.config.get('AWS_ACCESS_KEY_ID'),
+                        'AWS_SECRET_ACCESS_KEY': app.config.get('AWS_SECRET_ACCESS_KEY')
+                    }
+                    
+                    aws_service.initialize(aws_config)
+                    app.aws_service = aws_service
+                    app.logger.info("AWS services initialized for production")
                         
                 except Exception as e:
                     app.logger.error(f"AWS initialization failed: {str(e)}")
