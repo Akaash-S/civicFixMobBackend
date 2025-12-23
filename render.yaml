@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: civicfix-backend
+    env: python
+    plan: starter  # Change to 'standard' or 'pro' for production
+    buildCommand: "./build.sh"
+    startCommand: "./start.sh"
+    healthCheckPath: "/health"
+    
+    # Environment variables (you'll need to set these in Render dashboard)
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: FLASK_APP
+        value: run.py
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: GUNICORN_WORKERS
+        value: 2
+      - key: GUNICORN_WORKER_CLASS
+        value: gevent
+      - key: GUNICORN_TIMEOUT
+        value: 120
+        
+      # These will be set via Render dashboard with actual values
+      - key: SECRET_KEY
+        sync: false  # Set in dashboard
+      - key: DATABASE_URL
+        sync: false  # Set in dashboard
+      - key: AWS_ACCESS_KEY_ID
+        sync: false  # Set in dashboard
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false  # Set in dashboard
+      - key: AWS_REGION
+        sync: false  # Set in dashboard
+      - key: S3_BUCKET_NAME
+        sync: false  # Set in dashboard
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false  # Set in dashboard
+      - key: FIREBASE_PROJECT_ID
+        sync: false  # Set in dashboard
+
+# Optional: PostgreSQL database (you can also use external database)
+databases:
+  - name: civicfix-db
+    plan: starter  # Change to 'standard' for production

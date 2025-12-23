@@ -16,12 +16,13 @@ backlog = 2048
 # ================================
 # Worker Process Configuration
 # ================================
-# Calculate optimal worker count
+# Calculate optimal worker count for Render
 cpu_count = multiprocessing.cpu_count()
-workers = int(os.environ.get('GUNICORN_WORKERS', cpu_count * 2 + 1))
+# Render has memory limits, so use fewer workers
+workers = int(os.environ.get('GUNICORN_WORKERS', min(cpu_count * 2 + 1, 4)))
 
-# Worker class - eventlet for async support
-worker_class = "eventlet"
+# Worker class - use gevent for better Render compatibility
+worker_class = os.environ.get('GUNICORN_WORKER_CLASS', "gevent")
 worker_connections = int(os.environ.get('GUNICORN_WORKER_CONNECTIONS', 1000))
 
 # Timeouts

@@ -1,0 +1,2 @@
+web: gunicorn --config gunicorn.conf.py run:application
+release: python -c "from flask_migrate import upgrade; from app import create_app; app, _ = create_app(); app.app_context().push(); upgrade()" || echo "Migration skipped"
