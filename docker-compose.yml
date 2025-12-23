@@ -1,112 +1,318 @@
+# ================================
+# CivicFix Backend - Docker Compose Configuration
+# Production-ready setup with all services
+# ================================
+
+version: '3.8'
+
 services:
+  # ================================
   # CivicFix Backend Application
+  # ================================
   civicfix-backend:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        - FLASK_ENV=production
+        FLASK_ENV: production
+    image: civicfix/backend:latest
     container_name: civicfix-backend-prod
     restart: unless-stopped
+    
+    # Port mapping
     ports:
       - "5000:5000"
+    
+    # Environment configuration
     env_file:
       - .env.production
     environment:
       - FLASK_ENV=production
       - PORT=5000
+      - PYTHONPATH=/app
+    
+    # Volume mounts
     volumes:
       - ./logs:/app/logs:rw
+      - ./temp:/app/temp:rw
+      - ./uploads:/app/uploads:rw
+    
+    # Network configuration
     networks:
       - civicfix-network
+    
+    # Health check
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    
+    # Resource limits
     deploy:
       resources:
         limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
           memory: 512M
           cpus: '1.0'
-        reservations:
-          memory: 256M
-          cpus: '0.5'
+    
+    # Labels for service discovery
     labels:
+      - "com.civicfix.service=backend"
+      - "com.civicfix.version=1.0.0"
       - "traefik.enable=true"
-      - "traefik.http.routers.civicfix.rule=Host(`your-domain.com`)"
-      - "traefik.http.services.civicfix.loadbalancer.server.port=5000"
+      - "traefik.http.routers.civicfix-backend.rule=Host(`api.civicfix.com`)"
+      - "traefik.http.services.civicfix-backend.loadbalancer.server.port=5000"
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
+  # ================================
   # Nginx Reverse Proxy
+  # ================================
   nginx:
-    image: nginx:alpine
+    image: nginx:1.25-alpine
     container_name: civicfix-nginx
     restart: unless-stopped
+    
+    # Port mapping
     ports:
       - "80:80"
       - "443:443"
+    
+    # Volume mounts
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
+      - nginx_cache:/var/cache/nginx
+    
+    # Network configuration
     networks:
       - civicfix-network
+    
+    # Dependencies
     depends_on:
-      - civicfix-backend
+      civicfix-backend:
+        condition: service_healthy
+    
+    # Health check
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
+    
+    # Labels
+    labels:
+      - "com.civicfix.service=nginx"
+      - "com.civicfix.version=1.0.0"
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # Monitoring with Prometheus (optional)
+  # ================================
+  # Prometheus Monitoring (Optional)
+  # ================================
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.47.0
     container_name: civicfix-prometheus
     restart: unless-stopped
+    
+    # Port mapping
     ports:
       - "9090:9090"
+    
+    # Volume mounts
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
+    
+    # Network configuration
     networks:
       - civicfix-network
+    
+    # Command configuration
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/etc/prometheus/console_libraries'
       - '--web.console.templates=/etc/prometheus/consoles'
       - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=10GB'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+    # Labels
+    labels:
+      - "com.civicfix.service=prometheus"
+      - "com.civicfix.version=1.0.0"
+    
+    # Profiles (optional service)
     profiles:
       - monitoring
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # Grafana for monitoring dashboards (optional)
+  # ================================
+  # Grafana Dashboard (Optional)
+  # ================================
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.1.0
     container_name: civicfix-grafana
     restart: unless-stopped
+    
+    # Port mapping
     ports:
       - "3000:3000"
+    
+    # Volume mounts
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    
+    # Network configuration
     networks:
       - civicfix-network
+    
+    # Environment variables
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=change-this-admin-password
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-civicfix-admin-2024}
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    
+    # Dependencies
+    depends_on:
+      - prometheus
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+    # Labels
+    labels:
+      - "com.civicfix.service=grafana"
+      - "com.civicfix.version=1.0.0"
+    
+    # Profiles (optional service)
     profiles:
       - monitoring
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
+  # ================================
+  # Log Aggregation (Optional)
+  # ================================
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: civicfix-loki
+    restart: unless-stopped
+    
+    # Port mapping
+    ports:
+      - "3100:3100"
+    
+    # Volume mounts
+    volumes:
+      - ./loki.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    
+    # Network configuration
+    networks:
+      - civicfix-network
+    
+    # Command
+    command: -config.file=/etc/loki/local-config.yaml
+    
+    # Labels
+    labels:
+      - "com.civicfix.service=loki"
+      - "com.civicfix.version=1.0.0"
+    
+    # Profiles (optional service)
+    profiles:
+      - logging
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ================================
+# Network Configuration
+# ================================
 networks:
   civicfix-network:
     driver: bridge
     name: civicfix-network
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
 
+# ================================
+# Volume Configuration
+# ================================
 volumes:
+  # Nginx volumes
   nginx_logs:
     driver: local
+    name: civicfix_nginx_logs
+  
+  nginx_cache:
+    driver: local
+    name: civicfix_nginx_cache
+  
+  # Monitoring volumes
   prometheus_data:
     driver: local
+    name: civicfix_prometheus_data
+  
   grafana_data:
     driver: local
+    name: civicfix_grafana_data
+  
+  # Logging volumes
+  loki_data:
+    driver: local
+    name: civicfix_loki_data

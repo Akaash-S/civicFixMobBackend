@@ -66,12 +66,12 @@ class Config:
             "AWS_SECRET_ACCESS_KEY, and S3_BUCKET_NAME environment variables."
         )
     
-    # Firebase
+    # Firebase Configuration - supports both inline JSON and file path
     FIREBASE_SERVICE_ACCOUNT_PATH = os.environ.get('FIREBASE_SERVICE_ACCOUNT_PATH')
+    FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
     FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID')
     
-    # Redis
-    REDIS_URL = os.environ.get('REDIS_URL', 'memory://')
+
     
     # File Upload
     MAX_CONTENT_LENGTH = int(os.environ.get('MAX_CONTENT_LENGTH', 16777216))  # 16MB
@@ -121,9 +121,6 @@ class ProductionConfig(Config):
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = 'Lax'
-    
-    # Enhanced rate limiting for production
-    RATELIMIT_STORAGE_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
     
     # Production CORS settings (should be more restrictive)
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'https://yourdomain.com').split(',')
