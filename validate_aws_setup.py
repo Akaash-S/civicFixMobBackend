@@ -131,7 +131,7 @@ def validate_s3_connection():
         return False
 
 def validate_firebase_config():
-    """Validate Firebase configuration"""
+    """Validate Firebase configuration by actually initializing Firebase"""
     try:
         import base64
         import json
@@ -151,6 +151,47 @@ def validate_firebase_config():
             if 'project_id' not in cred_dict:
                 print("❌ Invalid Firebase service account JSON")
                 return False
+            
+            # Actually test Firebase initialization
+            try:
+                import firebase_admin
+                from firebase_admin import credentials
+                
+                # Try to initialize Firebase with the credentials
+                cred = credentials.Certificate(cred_dict)
+                
+                # Check if Firebase is already initialized
+                try:
+                    firebase_admin.get_app()
+                    firebase_admin.delete_app(firebase_admin.get_app())
+                except ValueError:
+                    pass  # No app initialized yet
+                
+                # Initialize Firebase
+                app = firebase_admin.initialize_app(cred)
+                
+                # Test basic functionality
+                from firebase_admin import auth
+                # This will fail if credentials are invalid
+                auth.get_user_by_email("nonexistent@example.com")
+                
+            except firebase_admin.exceptions.FirebaseError as e:
+                if "USER_NOT_FOUND" in str(e):
+                    # This is expected - means Firebase is working
+                    print("✅ Firebase configuration valid and working")
+                    print(f"   Project ID: {project_id}")
+                    return True
+                else:
+                    print(f"❌ Firebase error: {e}")
+                    return False
+            except Exception as e:
+                if "Unable to load PEM file" in str(e) or "InvalidData" in str(e):
+                    print(f"❌ Firebase private key is malformed: {e}")
+                    print("   The private key in your service account JSON may be corrupted")
+                    return False
+                else:
+                    print(f"❌ Firebase initialization failed: {e}")
+                    return False
             
             print("✅ Firebase configuration valid")
             print(f"   Project ID: {project_id}")
