@@ -2,21 +2,31 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import logging
 import os
-from flask import current_app
+from typing import Optional, Dict, Any
+
+class FirebaseServiceError(Exception):
+    pass
 
 class FirebaseService:
     def __init__(self):
         self.app = None
         self.logger = logging.getLogger(__name__)
+        self._initialized = False
     
-    def initialize(self):
-        """Initialize Firebase Admin SDK"""
+    def initialize(self, config: Dict[str, Any]) -> bool:
+        """Initialize Firebase Admin SDK - no Flask dependencies"""
+        if self._initialized:
+            return True
+            
         try:
-            service_account_path = current_app.config['FIREBASE_SERVICE_ACCOUNT_PATH']
-            project_id = current_app.config['FIREBASE_PROJECT_ID']
+            service_account_path = config.get('FIREBASE_SERVICE_ACCOUNT_PATH')
+            project_id = config.get('FIREBASE_PROJECT_ID')
             
             if not service_account_path or not os.path.exists(service_account_path):
-                raise FileNotFoundError(f"Firebase service account file not found: {service_account_path}")
+                raise FirebaseServiceError(f"Firebase service account file not found: {service_account_path}")
+            
+            if not project_id:
+                raise FirebaseServiceError("FIREBASE_PROJECT_ID is required")
             
             # Initialize Firebase Admin SDK
             cred = credentials.Certificate(service_account_path)
@@ -24,19 +34,29 @@ class FirebaseService:
                 'projectId': project_id
             })
             
-            # Verify connectivity by getting a test user (this will fail gracefully if no users exist)
+            # Verify connectivity
             try:
                 auth.list_users(max_results=1)
                 self.logger.info("Firebase Admin SDK initialized and verified successfully")
             except Exception as e:
                 self.logger.info("Firebase Admin SDK initialized (verification skipped)")
             
+            self._initialized = True
+            return True
+            
         except Exception as e:
             self.logger.error(f"Failed to initialize Firebase: {str(e)}")
-            raise
+            raise FirebaseServiceError(f"Firebase initialization failed: {str(e)}") from e
     
-    def verify_token(self, id_token):
+    def is_available(self) -> bool:
+        """Check if Firebase service is available"""
+        return self._initialized and self.app is not None
+    
+    def verify_token(self, id_token: str) -> Optional[Dict[str, Any]]:
         """Verify Firebase ID token and return user info"""
+        if not self.is_available():
+            raise FirebaseServiceError("Firebase service not initialized")
+            
         try:
             decoded_token = auth.verify_id_token(id_token)
             return {
@@ -49,8 +69,11 @@ class FirebaseService:
             self.logger.error(f"Token verification failed: {str(e)}")
             return None
     
-    def get_user_by_uid(self, uid):
+    def get_user_by_uid(self, uid: str) -> Optional[Dict[str, Any]]:
         """Get user information by Firebase UID"""
+        if not self.is_available():
+            raise FirebaseServiceError("Firebase service not initialized")
+            
         try:
             user_record = auth.get_user(uid)
             return {
@@ -64,8 +87,11 @@ class FirebaseService:
             self.logger.error(f"Failed to get user by UID: {str(e)}")
             return None
     
-    def create_custom_token(self, uid, additional_claims=None):
+    def create_custom_token(self, uid: str, additional_claims: Optional[Dict] = None) -> Optional[str]:
         """Create custom token for user"""
+        if not self.is_available():
+            raise FirebaseServiceError("Firebase service not initialized")
+            
         try:
             custom_token = auth.create_custom_token(uid, additional_claims)
             return custom_token.decode('utf-8')
@@ -73,8 +99,11 @@ class FirebaseService:
             self.logger.error(f"Failed to create custom token: {str(e)}")
             return None
     
-    def revoke_refresh_tokens(self, uid):
+    def revoke_refresh_tokens(self, uid: str) -> bool:
         """Revoke all refresh tokens for a user"""
+        if not self.is_available():
+            raise FirebaseServiceError("Firebase service not initialized")
+            
         try:
             auth.revoke_refresh_tokens(uid)
             return True
