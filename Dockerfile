@@ -1,8 +1,8 @@
 # ================================
 # CivicFix Backend - Production Dockerfile
+# Simplified build for better reliability
 # ================================
 
-# Use Python 3.11 slim image for optimal size and security
 FROM python:3.11-slim
 
 # Metadata
@@ -10,76 +10,57 @@ LABEL maintainer="CivicFix Team"
 LABEL version="1.0.0"
 LABEL description="CivicFix Backend API Server"
 
-# Set environment variables for Python optimization
+# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=random \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     FLASK_ENV=production \
     PORT=5000
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libpq-dev \
+    libssl-dev \
+    libffi-dev \
+    libjpeg-dev \
+    libpng-dev \
+    curl \
+    netcat-traditional \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create application user
+RUN groupadd -r appgroup && \
+    useradd -r -g appgroup -d /app -s /bin/bash appuser
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies in a single layer
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Build dependencies
-    gcc \
-    g++ \
-    make \
-    # PostgreSQL client library
-    libpq-dev \
-    # SSL/TLS support
-    ca-certificates \
-    # Health check utilities
-    curl \
-    # Process management
-    procps \
-    # Cleanup
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /tmp/* \
-    && rm -rf /var/tmp/*
-
-# Create application user for security
-RUN groupadd -r appgroup && \
-    useradd -r -g appgroup -d /app -s /bin/bash appuser
-
-# Copy requirements first for better Docker layer caching
-COPY requirements.txt ./
-
-# Install Python dependencies with optimizations
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt && \
-    # Clean up pip cache
-    pip cache purge
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY --chown=appuser:appgroup . .
 
-# Create necessary directories and set permissions
+# Create directories and set permissions
 RUN mkdir -p logs temp uploads && \
     chown -R appuser:appgroup /app && \
-    chmod -R 755 /app && \
+    chmod +x docker-entrypoint.sh && \
     chmod -R 777 logs temp uploads
 
 # Switch to non-root user
 USER appuser
 
-# Expose application port
+# Expose port
 EXPOSE $PORT
 
-# Add health check
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1
 
-# Set up entrypoint script
-COPY --chown=appuser:appgroup docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
-# Use entrypoint for initialization
-ENTRYPOINT ["docker-entrypoint.sh"]
-
-# Default command
+# Entrypoint and command
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["gunicorn", "--config", "gunicorn.conf.py", "run:application"]
