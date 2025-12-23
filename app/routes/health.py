@@ -70,16 +70,28 @@ def health_check():
     
     # Check Redis status (if configured)
     try:
-        from flask_limiter.util import get_remote_address
-        # If we can import this, rate limiter is working
+        redis_url = current_app.config.get('REDIS_URL')
+        if redis_url and redis_url != 'memory://':
+            import redis
+            r = redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+            r.ping()
+            health_data['services']['redis'] = {
+                'status': 'healthy',
+                'type': 'redis_server',
+                'url': redis_url.split('@')[-1] if '@' in redis_url else redis_url.split('//')[1]
+            }
+        else:
+            health_data['services']['redis'] = {
+                'status': 'memory',
+                'type': 'memory_storage',
+                'message': 'Using in-memory rate limiting'
+            }
+    except Exception as e:
         health_data['services']['redis'] = {
-            'status': 'healthy',
-            'type': 'rate_limiter'
-        }
-    except Exception:
-        health_data['services']['redis'] = {
-            'status': 'unknown',
-            'type': 'rate_limiter'
+            'status': 'unavailable',
+            'type': 'redis_server',
+            'error': str(e)[:100],
+            'fallback': 'memory_storage'
         }
     
     # Calculate response time

@@ -35,8 +35,7 @@ services:
         reservations:
           memory: 256M
           cpus: '0.5'
-    depends_on:
-      - redis
+    # Remove depends_on so backend can start without Redis
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.civicfix.rule=Host(`your-domain.com`)"
