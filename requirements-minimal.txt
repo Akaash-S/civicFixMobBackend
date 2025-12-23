@@ -1,0 +1,29 @@
+# Minimal requirements for troubleshooting Render deployment
+# Use this if the main requirements.txt fails to build
+
+# Core Flask (essential)
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-CORS==4.0.0
+Werkzeug==3.0.1
+
+# Database (essential)
+psycopg2-binary==2.9.9
+
+# Configuration (essential)
+python-dotenv==1.0.0
+requests==2.31.0
+
+# WSGI server (essential)
+gunicorn==21.2.0
+
+# Async support (essential for SocketIO)
+gevent==23.9.1
+
+# Basic serialization
+marshmallow==3.20.1
+
+# Security
+PyJWT==2.8.0
+
+# Add other packages one by one after this works

@@ -132,26 +132,34 @@ def initialize_services(app):
     
     # Initialize AWS Service with timeout
     try:
-        from app.services.aws_service import AWSService
-        
-        app.logger.info("Starting AWS service initialization...")
-        aws_service = AWSService()
-        aws_config = {
-            'S3_BUCKET_NAME': app.config.get('S3_BUCKET_NAME'),
-            'AWS_REGION': app.config.get('AWS_REGION'),
-            'AWS_ACCESS_KEY_ID': app.config.get('AWS_ACCESS_KEY_ID'),
-            'AWS_SECRET_ACCESS_KEY': app.config.get('AWS_SECRET_ACCESS_KEY')
-        }
-        
-        # Try to initialize with 60 second timeout
-        aws_success = aws_service.initialize(aws_config, timeout=60)
-        
-        if aws_success:
-            app.aws_service = aws_service
-            app.logger.info("✅ AWS services initialized successfully")
-        else:
+        # Check if AWS dependencies are available
+        try:
+            import boto3
+            import botocore
+        except ImportError:
+            app.logger.warning("⚠️ AWS dependencies not available - skipping AWS initialization")
             app.aws_service = None
-            app.logger.warning("⚠️ AWS services disabled - file uploads unavailable")
+        else:
+            from app.services.aws_service import AWSService
+            
+            app.logger.info("Starting AWS service initialization...")
+            aws_service = AWSService()
+            aws_config = {
+                'S3_BUCKET_NAME': app.config.get('S3_BUCKET_NAME'),
+                'AWS_REGION': app.config.get('AWS_REGION'),
+                'AWS_ACCESS_KEY_ID': app.config.get('AWS_ACCESS_KEY_ID'),
+                'AWS_SECRET_ACCESS_KEY': app.config.get('AWS_SECRET_ACCESS_KEY')
+            }
+            
+            # Try to initialize with 60 second timeout
+            aws_success = aws_service.initialize(aws_config, timeout=60)
+            
+            if aws_success:
+                app.aws_service = aws_service
+                app.logger.info("✅ AWS services initialized successfully")
+            else:
+                app.aws_service = None
+                app.logger.warning("⚠️ AWS services disabled - file uploads unavailable")
         
     except Exception as e:
         app.logger.error(f"❌ AWS initialization error: {str(e)}")
@@ -160,25 +168,32 @@ def initialize_services(app):
     
     # Initialize Firebase Service with timeout
     try:
-        from app.services.firebase_service import FirebaseService
-        
-        app.logger.info("Starting Firebase service initialization...")
-        firebase_service = FirebaseService()
-        firebase_config = {
-            'FIREBASE_SERVICE_ACCOUNT_PATH': app.config.get('FIREBASE_SERVICE_ACCOUNT_PATH'),
-            'FIREBASE_SERVICE_ACCOUNT_JSON': app.config.get('FIREBASE_SERVICE_ACCOUNT_JSON'),
-            'FIREBASE_PROJECT_ID': app.config.get('FIREBASE_PROJECT_ID')
-        }
-        
-        # Try to initialize with 30 second timeout
-        firebase_success = firebase_service.initialize(firebase_config, timeout=30)
-        
-        if firebase_success:
-            app.firebase_service = firebase_service
-            app.logger.info("✅ Firebase services initialized successfully")
-        else:
+        # Check if Firebase dependencies are available
+        try:
+            import firebase_admin
+        except ImportError:
+            app.logger.warning("⚠️ Firebase dependencies not available - skipping Firebase initialization")
             app.firebase_service = None
-            app.logger.warning("⚠️ Firebase services disabled - authentication may be limited")
+        else:
+            from app.services.firebase_service import FirebaseService
+            
+            app.logger.info("Starting Firebase service initialization...")
+            firebase_service = FirebaseService()
+            firebase_config = {
+                'FIREBASE_SERVICE_ACCOUNT_PATH': app.config.get('FIREBASE_SERVICE_ACCOUNT_PATH'),
+                'FIREBASE_SERVICE_ACCOUNT_JSON': app.config.get('FIREBASE_SERVICE_ACCOUNT_JSON'),
+                'FIREBASE_PROJECT_ID': app.config.get('FIREBASE_PROJECT_ID')
+            }
+            
+            # Try to initialize with 30 second timeout
+            firebase_success = firebase_service.initialize(firebase_config, timeout=30)
+            
+            if firebase_success:
+                app.firebase_service = firebase_service
+                app.logger.info("✅ Firebase services initialized successfully")
+            else:
+                app.firebase_service = None
+                app.logger.warning("⚠️ Firebase services disabled - authentication may be limited")
         
     except Exception as e:
         app.logger.error(f"❌ Firebase initialization error: {str(e)}")
