@@ -268,6 +268,75 @@ class APITester:
             self.log_test("Update Current User (With Auth)", False, error=str(e))
             return False
     
+    def test_get_status_options(self):
+        """Test getting status options"""
+        try:
+            response = self.session.get(f"{API_BASE}/status-options")
+            success = response.status_code == 200 and 'statuses' in response.json()
+            self.log_test("Get Status Options", success, response)
+            return success
+        except Exception as e:
+            self.log_test("Get Status Options", False, error=str(e))
+            return False
+    
+    def test_get_priority_options(self):
+        """Test getting priority options"""
+        try:
+            response = self.session.get(f"{API_BASE}/priority-options")
+            success = response.status_code == 200 and 'priorities' in response.json()
+            self.log_test("Get Priority Options", success, response)
+            return success
+        except Exception as e:
+            self.log_test("Get Priority Options", False, error=str(e))
+            return False
+    
+    def test_get_stats(self):
+        """Test getting system statistics"""
+        try:
+            response = self.session.get(f"{API_BASE}/stats")
+            success = response.status_code == 200 and 'total_issues' in response.json()
+            self.log_test("Get System Stats", success, response)
+            return success
+        except Exception as e:
+            self.log_test("Get System Stats", False, error=str(e))
+            return False
+    
+    def test_get_nearby_issues(self):
+        """Test getting nearby issues"""
+        try:
+            response = self.session.get(f"{API_BASE}/issues/nearby?latitude=40.7128&longitude=-74.0060&radius=5")
+            success = response.status_code == 200 and 'issues' in response.json()
+            self.log_test("Get Nearby Issues", success, response)
+            return success
+        except Exception as e:
+            self.log_test("Get Nearby Issues", False, error=str(e))
+            return False
+    
+    def test_update_issue_with_auth(self):
+        """Test updating an issue with authentication"""
+        if not self.created_issue_id:
+            self.log_test("Update Issue (With Auth)", False, error="No issue ID available")
+            return False
+        
+        try:
+            headers = {"Authorization": f"Bearer {TEST_USER_TOKEN}"}
+            update_data = {
+                "title": "Updated Street Light Issue",
+                "description": "Updated description with more details",
+                "priority": "HIGH"
+            }
+            response = self.session.put(
+                f"{API_BASE}/issues/{self.created_issue_id}",
+                json=update_data,
+                headers=headers
+            )
+            success = response.status_code == 200
+            self.log_test("Update Issue (With Auth)", success, response)
+            return success
+        except Exception as e:
+            self.log_test("Update Issue (With Auth)", False, error=str(e))
+            return False
+    
     def test_invalid_endpoint(self):
         """Test invalid endpoint"""
         try:
@@ -309,6 +378,13 @@ class APITester:
         self.test_get_current_user_no_auth()
         self.test_get_current_user_with_auth()
         self.test_update_current_user_with_auth()
+        
+        # Additional endpoint tests
+        self.test_get_status_options()
+        self.test_get_priority_options()
+        self.test_get_stats()
+        self.test_get_nearby_issues()
+        self.test_update_issue_with_auth()
         
         # Error handling tests
         self.test_invalid_endpoint()

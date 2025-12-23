@@ -32,7 +32,15 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Initialize extensions
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
-CORS(app)
+
+# Configure CORS
+cors_origins = os.environ.get('CORS_ORIGINS', '*')
+if cors_origins == '*':
+    CORS(app)
+else:
+    # Parse comma-separated origins
+    origins = [origin.strip() for origin in cors_origins.split(',')]
+    CORS(app, origins=origins)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -431,6 +439,168 @@ def update_current_user(current_user):
         return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
+# Additional Issue Routes
+# ================================
+
+@app.route('/api/v1/issues/<int:issue_id>', methods=['PUT'])
+@require_auth
+def update_issue(current_user, issue_id):
+    """Update an issue (only by creator or admin)"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Check if user is the creator (in a real app, you might have admin roles)
+        if issue.created_by != current_user.id:
+            return jsonify({'error': 'Permission denied'}), 403
+        
+        # Update allowed fields
+        if 'title' in data:
+            issue.title = data['title']
+        if 'description' in data:
+            issue.description = data['description']
+        if 'category' in data:
+            issue.category = data['category']
+        if 'priority' in data:
+            issue.priority = data['priority']
+        if 'address' in data:
+            issue.address = data['address']
+        if 'image_url' in data:
+            issue.image_url = data['image_url']
+        
+        issue.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        logger.info(f"Issue {issue_id} updated by user {current_user.email}")
+        
+        return jsonify({
+            'message': 'Issue updated successfully',
+            'issue': issue.to_dict()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating issue: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>', methods=['DELETE'])
+@require_auth
+def delete_issue(current_user, issue_id):
+    """Delete an issue (only by creator)"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Check if user is the creator
+        if issue.created_by != current_user.id:
+            return jsonify({'error': 'Permission denied'}), 403
+        
+        db.session.delete(issue)
+        db.session.commit()
+        
+        logger.info(f"Issue {issue_id} deleted by user {current_user.email}")
+        
+        return jsonify({'message': 'Issue deleted successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error deleting issue: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/users/<int:user_id>/issues', methods=['GET'])
+def get_user_issues(user_id):
+    """Get issues created by a specific user"""
+    try:
+        # Query parameters
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 20, type=int), 100)
+        status = request.args.get('status')
+        
+        # Build query
+        query = Issue.query.filter_by(created_by=user_id)
+        
+        if status:
+            query = query.filter(Issue.status == status)
+        
+        # Order by creation date (newest first)
+        query = query.order_by(Issue.created_at.desc())
+        
+        # Paginate
+        pagination = query.paginate(
+            page=page,
+            per_page=per_page,
+            error_out=False
+        )
+        
+        issues = [issue.to_dict() for issue in pagination.items]
+        
+        return jsonify({
+            'issues': issues,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': pagination.total,
+                'pages': pagination.pages,
+                'has_next': pagination.has_next,
+                'has_prev': pagination.has_prev
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting user issues: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/stats', methods=['GET'])
+def get_stats():
+    """Get system statistics"""
+    try:
+        total_issues = Issue.query.count()
+        total_users = User.query.count()
+        
+        # Issues by status
+        open_issues = Issue.query.filter_by(status='OPEN').count()
+        in_progress_issues = Issue.query.filter_by(status='IN_PROGRESS').count()
+        resolved_issues = Issue.query.filter_by(status='RESOLVED').count()
+        closed_issues = Issue.query.filter_by(status='CLOSED').count()
+        
+        # Issues by category
+        categories_stats = {}
+        categories = [
+            'Pothole', 'Street Light', 'Garbage Collection', 'Traffic Signal',
+            'Road Damage', 'Water Leak', 'Sidewalk Issue', 'Graffiti',
+            'Noise Complaint', 'Other'
+        ]
+        
+        for category in categories:
+            count = Issue.query.filter_by(category=category).count()
+            if count > 0:
+                categories_stats[category] = count
+        
+        return jsonify({
+            'total_issues': total_issues,
+            'total_users': total_users,
+            'issues_by_status': {
+                'OPEN': open_issues,
+                'IN_PROGRESS': in_progress_issues,
+                'RESOLVED': resolved_issues,
+                'CLOSED': closed_issues
+            },
+            'issues_by_category': categories_stats,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
 # Utility Routes
 # ================================
 
@@ -450,6 +620,63 @@ def get_categories():
         'Other'
     ]
     return jsonify({'categories': categories})
+
+@app.route('/api/v1/issues/nearby', methods=['GET'])
+def get_nearby_issues():
+    """Get issues near a specific location"""
+    try:
+        # Get location parameters
+        lat = request.args.get('latitude', type=float)
+        lng = request.args.get('longitude', type=float)
+        radius = request.args.get('radius', 5.0, type=float)  # Default 5km radius
+        
+        if lat is None or lng is None:
+            return jsonify({'error': 'latitude and longitude parameters are required'}), 400
+        
+        # Simple distance calculation (for more accuracy, use PostGIS in production)
+        # This is a basic implementation using Haversine formula approximation
+        lat_range = radius / 111.0  # Rough conversion: 1 degree ≈ 111 km
+        lng_range = radius / (111.0 * abs(lat) / 90.0) if lat != 0 else radius / 111.0
+        
+        # Query issues within the bounding box
+        issues = Issue.query.filter(
+            Issue.latitude.between(lat - lat_range, lat + lat_range),
+            Issue.longitude.between(lng - lng_range, lng + lng_range)
+        ).order_by(Issue.created_at.desc()).limit(50).all()
+        
+        return jsonify({
+            'issues': [issue.to_dict() for issue in issues],
+            'center': {'latitude': lat, 'longitude': lng},
+            'radius_km': radius,
+            'count': len(issues)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting nearby issues: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/status-options', methods=['GET'])
+def get_status_options():
+    """Get available issue status options"""
+    statuses = [
+        {'value': 'OPEN', 'label': 'Open', 'description': 'Issue reported and awaiting review'},
+        {'value': 'IN_PROGRESS', 'label': 'In Progress', 'description': 'Issue is being worked on'},
+        {'value': 'RESOLVED', 'label': 'Resolved', 'description': 'Issue has been fixed'},
+        {'value': 'CLOSED', 'label': 'Closed', 'description': 'Issue is closed (resolved or rejected)'},
+        {'value': 'REJECTED', 'label': 'Rejected', 'description': 'Issue was rejected or invalid'}
+    ]
+    return jsonify({'statuses': statuses})
+
+@app.route('/api/v1/priority-options', methods=['GET'])
+def get_priority_options():
+    """Get available issue priority options"""
+    priorities = [
+        {'value': 'LOW', 'label': 'Low', 'description': 'Non-urgent issue'},
+        {'value': 'MEDIUM', 'label': 'Medium', 'description': 'Standard priority'},
+        {'value': 'HIGH', 'label': 'High', 'description': 'Important issue requiring attention'},
+        {'value': 'URGENT', 'label': 'Urgent', 'description': 'Critical issue requiring immediate attention'}
+    ]
+    return jsonify({'priorities': priorities})
 
 # ================================
 # Error Handlers
