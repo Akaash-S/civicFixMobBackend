@@ -71,7 +71,7 @@ class Config:
     FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID')
     
     # Redis
-    REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+    REDIS_URL = os.environ.get('REDIS_URL', 'memory://')
     
     # File Upload
     MAX_CONTENT_LENGTH = int(os.environ.get('MAX_CONTENT_LENGTH', 16777216))  # 16MB
