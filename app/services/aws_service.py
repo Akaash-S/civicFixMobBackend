@@ -1,10 +1,7 @@
-"""
-Production-safe AWS Service - Fixed recursion issues
-"""
-
 import boto3
 import logging
 import threading
+import time
 from typing import Optional, Dict, Any
 from botocore.exceptions import ClientError, NoCredentialsError
 
@@ -32,24 +29,47 @@ class AWSService:
         self.s3_client: Optional[boto3.client] = None
         self.bucket_name: Optional[str] = None
         self.region: Optional[str] = None
+        self._available = False
         self._initialized = True
     
-    def initialize(self, config: Dict[str, Any]) -> bool:
-        """Initialize AWS services - no recursion"""
+    def initialize(self, config: Dict[str, Any], timeout: int = 60) -> bool:
+        """
+        Initialize AWS services with timeout - never block server startup
+        
+        Args:
+            config: AWS configuration dictionary
+            timeout: Maximum time to wait for initialization (seconds)
+            
+        Returns:
+            bool: True if successful, False if failed/timeout
+        """
+        start_time = time.time()
+        
         try:
+            logger.info(f"Initializing AWS services (timeout: {timeout}s)...")
+            
             self.bucket_name = config.get('S3_BUCKET_NAME')
             self.region = config.get('AWS_REGION', 'us-east-1')
             access_key = config.get('AWS_ACCESS_KEY_ID')
             secret_key = config.get('AWS_SECRET_ACCESS_KEY')
             
+            # Quick validation
             if not self.bucket_name:
-                raise AWSServiceError("S3_BUCKET_NAME is required")
+                logger.warning("S3_BUCKET_NAME not configured - AWS services disabled")
+                return False
             
-            # Create S3 client with proper configuration
+            # Check for placeholder values
+            if any("your-" in str(val) for val in [self.bucket_name, access_key, secret_key] if val):
+                logger.warning("AWS configuration contains placeholder values - AWS services disabled")
+                return False
+            
+            # Create S3 client with timeout
             client_config = boto3.session.Config(
                 region_name=self.region,
-                retries={'max_attempts': 3, 'mode': 'adaptive'},
-                max_pool_connections=50
+                retries={'max_attempts': 2, 'mode': 'adaptive'},
+                max_pool_connections=10,
+                connect_timeout=10,
+                read_timeout=20
             )
             
             if access_key and secret_key:
@@ -63,25 +83,36 @@ class AWSService:
                 # Use default credential chain (IAM role)
                 self.s3_client = boto3.client('s3', config=client_config)
             
-            # Test connection
+            # Test connection with timeout
+            elapsed = time.time() - start_time
+            if elapsed >= timeout:
+                logger.warning(f"AWS initialization timeout ({timeout}s) - skipping connection test")
+                self._available = False
+                return False
+            
+            # Quick connectivity test
             self.s3_client.head_bucket(Bucket=self.bucket_name)
             
-            logger.info(f"AWS S3 initialized: {self.bucket_name}")
+            elapsed = time.time() - start_time
+            self._available = True
+            logger.info(f"AWS S3 initialized successfully in {elapsed:.2f}s: {self.bucket_name}")
             return True
             
         except Exception as e:
-            logger.error(f"AWS initialization failed: {e}")
+            elapsed = time.time() - start_time
+            logger.warning(f"AWS initialization failed after {elapsed:.2f}s: {e}")
             self._cleanup()
-            raise AWSServiceError(f"AWS init failed: {e}") from e
+            return False
     
     def _cleanup(self):
         """Clean up resources"""
         self.s3_client = None
         self.bucket_name = None
+        self._available = False
     
     def is_available(self) -> bool:
         """Check if AWS services are available"""
-        return self.s3_client is not None and self.bucket_name is not None
+        return self._available and self.s3_client is not None and self.bucket_name is not None
     
     def generate_presigned_upload_url(self, file_key: str, content_type: str, expiration: int = 3600) -> Dict[str, Any]:
         """Generate presigned URL for file upload"""
