@@ -180,8 +180,9 @@ def initialize_services(app):
             app.logger.info("Starting Firebase service initialization...")
             firebase_service = FirebaseService()
             firebase_config = {
-                'FIREBASE_SERVICE_ACCOUNT_PATH': app.config.get('FIREBASE_SERVICE_ACCOUNT_PATH'),
+                'FIREBASE_SERVICE_ACCOUNT_B64': app.config.get('FIREBASE_SERVICE_ACCOUNT_B64'),
                 'FIREBASE_SERVICE_ACCOUNT_JSON': app.config.get('FIREBASE_SERVICE_ACCOUNT_JSON'),
+                'FIREBASE_SERVICE_ACCOUNT_PATH': app.config.get('FIREBASE_SERVICE_ACCOUNT_PATH'),
                 'FIREBASE_PROJECT_ID': app.config.get('FIREBASE_PROJECT_ID')
             }
             

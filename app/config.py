@@ -66,9 +66,10 @@ class Config:
             "AWS_SECRET_ACCESS_KEY, and S3_BUCKET_NAME environment variables."
         )
     
-    # Firebase Configuration - supports both inline JSON and file path
-    FIREBASE_SERVICE_ACCOUNT_PATH = os.environ.get('FIREBASE_SERVICE_ACCOUNT_PATH')
-    FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
+    # Firebase Configuration - supports multiple methods
+    FIREBASE_SERVICE_ACCOUNT_B64 = os.environ.get('FIREBASE_SERVICE_ACCOUNT_B64')  # Recommended
+    FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')  # Fallback
+    FIREBASE_SERVICE_ACCOUNT_PATH = os.environ.get('FIREBASE_SERVICE_ACCOUNT_PATH')  # Legacy
     FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID')
     
 
