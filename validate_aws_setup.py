@@ -176,7 +176,7 @@ def validate_firebase_config():
                 auth.get_user_by_email("nonexistent@example.com")
                 
             except firebase_admin.exceptions.FirebaseError as e:
-                if "USER_NOT_FOUND" in str(e):
+                if "USER_NOT_FOUND" in str(e) or "No user record found" in str(e):
                     # This is expected - means Firebase is working
                     print("✅ Firebase configuration valid and working")
                     print(f"   Project ID: {project_id}")
