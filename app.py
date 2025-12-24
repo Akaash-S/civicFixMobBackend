@@ -154,6 +154,7 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False)
     name = db.Column(db.String(255), nullable=False)
     phone = db.Column(db.String(20))
+    photo_url = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -167,6 +168,7 @@ class User(db.Model):
             'email': self.email,
             'name': self.name,
             'phone': self.phone,
+            'photo_url': self.photo_url,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -236,31 +238,31 @@ class Issue(db.Model):
 # ================================
 
 def verify_firebase_token(token):
-    """Simple Firebase token verification"""
+    """Real Firebase token verification - No mock authentication"""
     try:
-        # Try to initialize Firebase if not already done
+        # Initialize Firebase if not already done
         if not hasattr(app, '_firebase_initialized'):
             init_firebase()
         
         if hasattr(app, '_firebase_auth') and app._firebase_auth:
             from firebase_admin import auth
             decoded_token = auth.verify_id_token(token)
+            logger.info(f"Firebase token verified successfully for user: {decoded_token.get('email', 'unknown')}")
             return decoded_token
         else:
-            # For development/testing - accept any token
-            logger.warning("Firebase not available - using mock authentication")
-            return {'uid': 'test-user', 'email': 'test@example.com', 'name': 'Test User'}
+            logger.error("Firebase not available - authentication failed")
+            return None
     except Exception as e:
         logger.error(f"Firebase token verification failed: {e}")
-        # For development/testing - accept any token when Firebase fails
-        logger.warning("Using mock authentication due to Firebase error")
-        return {'uid': 'test-user', 'email': 'test@example.com', 'name': 'Test User'}
+        return None
 
 def init_firebase():
-    """Initialize Firebase Admin SDK"""
+    """Initialize Firebase Admin SDK - Real Firebase only"""
     try:
         import firebase_admin
         from firebase_admin import credentials
+        
+        logger.info("🔥 Initializing Firebase Admin SDK (Real Firebase - No Mock)")
         
         # Try Base64 encoded credentials first
         b64_creds = os.environ.get('FIREBASE_SERVICE_ACCOUNT_B64')
@@ -271,11 +273,11 @@ def init_firebase():
                 cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
                 app._firebase_auth = True
-                logger.info("Firebase initialized with Base64 credentials")
+                logger.info("✅ Firebase initialized with Base64 credentials")
                 app._firebase_initialized = True
                 return
             except Exception as e:
-                logger.error(f"Base64 Firebase init failed: {e}")
+                logger.error(f"❌ Base64 Firebase init failed: {e}")
         
         # Try JSON string credentials
         json_creds = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
@@ -285,11 +287,11 @@ def init_firebase():
                 cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
                 app._firebase_auth = True
-                logger.info("Firebase initialized with JSON credentials")
+                logger.info("✅ Firebase initialized with JSON credentials")
                 app._firebase_initialized = True
                 return
             except Exception as e:
-                logger.error(f"JSON Firebase init failed: {e}")
+                logger.error(f"❌ JSON Firebase init failed: {e}")
         
         # Try file path
         cred_path = os.environ.get('FIREBASE_SERVICE_ACCOUNT_PATH')
@@ -298,22 +300,25 @@ def init_firebase():
                 cred = credentials.Certificate(cred_path)
                 firebase_admin.initialize_app(cred)
                 app._firebase_auth = True
-                logger.info("Firebase initialized with file credentials")
+                logger.info("✅ Firebase initialized with file credentials")
                 app._firebase_initialized = True
                 return
             except Exception as e:
-                logger.error(f"File Firebase init failed: {e}")
+                logger.error(f"❌ File Firebase init failed: {e}")
         
-        logger.warning("No Firebase credentials found - authentication disabled")
+        # No Firebase credentials found - this is now an error
+        logger.error("❌ No Firebase credentials found - authentication will fail")
+        logger.error("Required: FIREBASE_SERVICE_ACCOUNT_B64, FIREBASE_SERVICE_ACCOUNT_JSON, or FIREBASE_SERVICE_ACCOUNT_PATH")
         app._firebase_auth = False
         app._firebase_initialized = True
         
     except ImportError:
-        logger.warning("Firebase Admin SDK not installed - authentication disabled")
+        logger.error("❌ Firebase Admin SDK not installed - authentication will fail")
+        logger.error("Install with: pip install firebase-admin")
         app._firebase_auth = False
         app._firebase_initialized = True
     except Exception as e:
-        logger.error(f"Firebase initialization failed: {e}")
+        logger.error(f"❌ Firebase initialization failed: {e}")
         app._firebase_auth = False
         app._firebase_initialized = True
 
@@ -670,6 +675,60 @@ def update_issue_status(current_user, issue_id):
         return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
+# Authentication Routes
+# ================================
+
+@app.route('/api/v1/auth/google', methods=['POST'])
+def authenticate_with_google():
+    """Authenticate user with Google OAuth data"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        # Validate required fields
+        required_fields = ['google_id', 'email', 'name']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'{field} is required'}), 400
+        
+        # Check if user already exists
+        user = User.query.filter_by(firebase_uid=data['google_id']).first()
+        
+        if not user:
+            # Create new user
+            user = User(
+                firebase_uid=data['google_id'],
+                email=data['email'],
+                name=data['name']
+            )
+            db.session.add(user)
+            db.session.commit()
+            logger.info(f"New user created: {user.email}")
+        else:
+            # Update existing user info
+            user.email = data['email']
+            user.name = data['name']
+            user.updated_at = datetime.utcnow()
+            db.session.commit()
+            logger.info(f"User updated: {user.email}")
+        
+        # Generate a simple token (in production, use proper JWT)
+        token = f"user_{user.id}_{user.firebase_uid}"
+        
+        return jsonify({
+            'message': 'Authentication successful',
+            'user': user.to_dict(),
+            'token': token
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error authenticating with Google: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
 # User Routes
 # ================================
 
@@ -690,6 +749,8 @@ def update_current_user(current_user):
             current_user.name = data['name']
         if 'phone' in data:
             current_user.phone = data['phone']
+        if 'photo_url' in data:
+            current_user.photo_url = data['photo_url']
         
         current_user.updated_at = datetime.utcnow()
         db.session.commit()
