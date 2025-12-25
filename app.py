@@ -678,44 +678,85 @@ def update_issue_status(current_user, issue_id):
 # Authentication Routes
 # ================================
 
+import jwt
+import requests
+
 @app.route('/api/v1/auth/google', methods=['POST'])
 def authenticate_with_google():
-    """Authenticate user with Google OAuth data"""
+    """
+    Authenticate user with Google ID Token
+    1. Verify ID Token with Google
+    2. Get/Create User
+    3. Issue JWT
+    """
     try:
         data = request.get_json()
         
-        if not data:
-            return jsonify({'error': 'Request body required'}), 400
+        if not data or 'id_token' not in data:
+            return jsonify({'error': 'id_token is required'}), 400
         
-        # Validate required fields
-        required_fields = ['google_id', 'email', 'name']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'error': f'{field} is required'}), 400
+        id_token = data['id_token']
         
-        # Check if user already exists
-        user = User.query.filter_by(firebase_uid=data['google_id']).first()
+        # 1. Verify with Google
+        # We use requests to call Google's tokeninfo endpoint
+        # This is simpler/safer than local verification for this setup
+        google_response = requests.get(
+            f'https://oauth2.googleapis.com/tokeninfo?id_token={id_token}'
+        )
+        
+        if google_response.status_code != 200:
+            logger.error(f"Google Token Verification Failed: {google_response.text}")
+            return jsonify({'error': 'Invalid Google Token'}), 401
+            
+        google_data = google_response.json()
+        
+        # Verify Audience (Optional but recommended)
+        # client_id = os.environ.get('GOOGLE_CLIENT_ID')
+        # if client_id and google_data['aud'] != client_id:
+        #    return jsonify({'error': 'Token audience mismatch'}), 401
+
+        # Extract user info
+        firebase_uid = google_data['sub'] # Google's unique user ID
+        email = google_data['email']
+        name = google_data.get('name', email.split('@')[0])
+        photo_url = google_data.get('picture')
+        
+        # 2. Get or Create User
+        user = User.query.filter_by(email=email).first()
         
         if not user:
             # Create new user
             user = User(
-                firebase_uid=data['google_id'],
-                email=data['email'],
-                name=data['name']
+                firebase_uid=firebase_uid, # Using Google sub as uid
+                email=email,
+                name=name,
+                photo_url=photo_url
             )
             db.session.add(user)
             db.session.commit()
             logger.info(f"New user created: {user.email}")
         else:
-            # Update existing user info
-            user.email = data['email']
-            user.name = data['name']
+            # Update existing user
+            if user.firebase_uid != firebase_uid:
+                # Link account if email matches but uid doesn't (rare but possible)
+                user.firebase_uid = firebase_uid
+                
+            user.name = name
+            if photo_url:
+                user.photo_url = photo_url
             user.updated_at = datetime.utcnow()
             db.session.commit()
-            logger.info(f"User updated: {user.email}")
+            logger.info(f"User login: {user.email}")
         
-        # Generate a simple token (in production, use proper JWT)
-        token = f"user_{user.id}_{user.firebase_uid}"
+        # 3. Generate JWT
+        payload = {
+            'user_id': user.id,
+            'email': user.email,
+            'exp': datetime.utcnow() + datetime.timedelta(days=7), # 7 Day Expiry
+            'iat': datetime.utcnow()
+        }
+        
+        token = jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
         
         return jsonify({
             'message': 'Authentication successful',
@@ -726,7 +767,7 @@ def authenticate_with_google():
     except Exception as e:
         logger.error(f"Error authenticating with Google: {e}")
         db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 # ================================
 # User Routes
