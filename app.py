@@ -16,6 +16,10 @@ import boto3
 from botocore.exceptions import ClientError
 import uuid
 from werkzeug.utils import secure_filename
+import jwt
+import requests
+from functools import lru_cache
+import time
 
 # Load environment variables from .env file
 try:
@@ -256,6 +260,102 @@ def verify_firebase_token(token):
         logger.error(f"Firebase token verification failed: {e}")
         return None
 
+@lru_cache(maxsize=1)
+def get_supabase_jwt_secret():
+    """Get Supabase JWT secret from environment"""
+    jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
+    if not jwt_secret:
+        logger.warning("SUPABASE_JWT_SECRET not found in environment variables")
+        return None
+    return jwt_secret
+
+def verify_supabase_token(token):
+    """Verify Supabase JWT token"""
+    try:
+        jwt_secret = get_supabase_jwt_secret()
+        if not jwt_secret:
+            logger.error("Supabase JWT secret not configured")
+            return None
+        
+        # Decode and verify the JWT token
+        decoded_token = jwt.decode(
+            token, 
+            jwt_secret, 
+            algorithms=['HS256'],
+            options={"verify_exp": True, "verify_aud": False}
+        )
+        
+        # Validate required fields
+        if 'sub' not in decoded_token:
+            logger.error("Invalid Supabase token: missing 'sub' field")
+            return None
+        
+        # Check if token is expired
+        if 'exp' in decoded_token:
+            if time.time() > decoded_token['exp']:
+                logger.error("Supabase token expired")
+                return None
+        
+        # Extract user information
+        user_data = {
+            'uid': decoded_token['sub'],
+            'email': decoded_token.get('email', ''),
+            'name': decoded_token.get('user_metadata', {}).get('full_name') or 
+                   decoded_token.get('user_metadata', {}).get('name') or
+                   decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User',
+            'provider': 'supabase',
+            'aud': decoded_token.get('aud', ''),
+            'role': decoded_token.get('role', 'authenticated')
+        }
+        
+        logger.info(f"Supabase token verified successfully for user: {user_data['email']}")
+        return user_data
+        
+    except jwt.ExpiredSignatureError:
+        logger.error("Supabase token expired")
+        return None
+    except jwt.InvalidTokenError as e:
+        logger.error(f"Invalid Supabase token: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Supabase token verification failed: {e}")
+        return None
+
+def verify_custom_token(token):
+    """Verify custom base64 encoded token (for development/testing only)"""
+    try:
+        # Only allow in development mode
+        if os.environ.get('FLASK_ENV') != 'development':
+            logger.warning("Custom token verification only allowed in development mode")
+            return None
+        
+        decoded_data = base64.b64decode(token).decode('utf-8')
+        user_data = json.loads(decoded_data)
+        
+        # Validate token expiration if present
+        if 'exp' in user_data:
+            if time.time() > user_data['exp']:
+                logger.error("Custom token expired")
+                return None
+        
+        # Validate required fields
+        user_id = user_data.get('user_id') or user_data.get('uid')
+        if not user_id:
+            logger.error("Invalid custom token: missing user_id/uid")
+            return None
+        
+        # Return standardized user data
+        return {
+            'uid': user_id,
+            'email': user_data.get('email', ''),
+            'name': user_data.get('name') or user_data.get('email', '').split('@')[0] if user_data.get('email') else 'User',
+            'provider': 'custom'
+        }
+        
+    except Exception as e:
+        logger.error(f"Custom token verification failed: {e}")
+        return None
+
 def init_firebase():
     """Initialize Firebase Admin SDK - Real Firebase only"""
     try:
@@ -323,78 +423,77 @@ def init_firebase():
         app._firebase_initialized = True
 
 def require_auth(f):
-    """Decorator to require authentication (Firebase or Supabase)"""
+    """Decorator to require proper authentication (Firebase, Supabase, or Custom)"""
     from functools import wraps
-    import base64
-    import json
-    import binascii
     
     @wraps(f)
     def decorated_function(*args, **kwargs):
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
+            logger.warning("Missing or invalid Authorization header")
             return jsonify({'error': 'Authorization header required'}), 401
         
         token = auth_header.split(' ')[1]
+        user_data = None
         
-        # Try to decode the token as a simple JWT-like structure first (for Supabase compatibility)
-        try:
-            # Check if it's a base64 encoded JSON (simple token from frontend)
-            try:
-                decoded_data = base64.b64decode(token).decode('utf-8')
-                user_data = json.loads(decoded_data)
-                
-                # Validate token expiration if present
-                if 'exp' in user_data:
-                    import time
-                    if time.time() > user_data['exp']:
-                        return jsonify({'error': 'Token expired'}), 401
-                
-                # Get or create user based on the token data
-                user_id = user_data.get('user_id') or user_data.get('uid')
-                email = user_data.get('email', '')
-                
-                if not user_id:
-                    return jsonify({'error': 'Invalid token format'}), 401
-                
-                user = User.query.filter_by(firebase_uid=user_id).first()
-                if not user:
-                    user = User(
-                        firebase_uid=user_id,
-                        email=email,
-                        name=email.split('@')[0] if email else 'User'
-                    )
-                    db.session.add(user)
-                    db.session.commit()
-                    logger.info(f"Created new user: {user.email}")
-                
-                return f(user, *args, **kwargs)
-                
-            except (binascii.Error, json.JSONDecodeError, ValueError):
-                # If base64 decoding fails, try Firebase token verification
-                pass
+        # Try Supabase JWT verification first (most secure)
+        logger.debug("Attempting Supabase JWT verification...")
+        user_data = verify_supabase_token(token)
         
-        except Exception as e:
-            logger.debug(f"Simple token verification failed: {e}")
-        
-        # Fallback to Firebase token verification
-        user_data = verify_firebase_token(token)
-        
+        # If Supabase fails, try Firebase
         if not user_data:
-            return jsonify({'error': 'Invalid token'}), 401
+            logger.debug("Supabase verification failed, trying Firebase...")
+            user_data = verify_firebase_token(token)
         
-        # Get or create user
-        user = User.query.filter_by(firebase_uid=user_data['uid']).first()
-        if not user:
-            user = User(
-                firebase_uid=user_data['uid'],
-                email=user_data.get('email', ''),
-                name=user_data.get('name', 'Unknown User')
-            )
-            db.session.add(user)
-            db.session.commit()
+        # If both fail, try custom token (development only)
+        if not user_data:
+            logger.debug("Firebase verification failed, trying custom token...")
+            user_data = verify_custom_token(token)
         
-        return f(user, *args, **kwargs)
+        # If all verification methods fail
+        if not user_data:
+            logger.warning(f"All token verification methods failed for token: {token[:20]}...")
+            return jsonify({'error': 'Invalid or expired token'}), 401
+        
+        # Get or create user in database
+        try:
+            user = User.query.filter_by(firebase_uid=user_data['uid']).first()
+            if not user:
+                # Create new user
+                user = User(
+                    firebase_uid=user_data['uid'],
+                    email=user_data.get('email', ''),
+                    name=user_data.get('name', 'User'),
+                    phone='',  # Will be updated by user later
+                    photo_url=''  # Will be updated by user later
+                )
+                db.session.add(user)
+                db.session.commit()
+                logger.info(f"Created new user: {user.email} (Provider: {user_data.get('provider', 'unknown')})")
+            else:
+                # Update existing user info if needed
+                updated = False
+                if user.email != user_data.get('email', '') and user_data.get('email'):
+                    user.email = user_data['email']
+                    updated = True
+                if user.name != user_data.get('name', '') and user_data.get('name'):
+                    user.name = user_data['name']
+                    updated = True
+                
+                if updated:
+                    user.updated_at = datetime.utcnow()
+                    db.session.commit()
+                    logger.info(f"Updated user info: {user.email}")
+            
+            # Log successful authentication
+            logger.info(f"Authentication successful: {user.email} (Provider: {user_data.get('provider', 'unknown')})")
+            
+            return f(user, *args, **kwargs)
+            
+        except Exception as e:
+            logger.error(f"Database error during authentication: {e}")
+            db.session.rollback()
+            return jsonify({'error': 'Authentication database error'}), 500
     
     return decorated_function
 
