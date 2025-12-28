@@ -355,36 +355,42 @@ def verify_supabase_token(token):
         return None
 
 def verify_custom_token(token):
-    """Verify custom base64 encoded token (for development/testing only)"""
+    """Verify custom JWT token created by our Google auth endpoint"""
     try:
-        # Only allow in development mode
-        if os.environ.get('FLASK_ENV') != 'development':
-            logger.warning("Custom token verification only allowed in development mode")
+        jwt_secret = get_supabase_jwt_secret()
+        if not jwt_secret:
+            logger.error("Cannot verify custom token: Supabase JWT secret not configured")
             return None
         
-        decoded_data = base64.b64decode(token).decode('utf-8')
-        user_data = json.loads(decoded_data)
+        # Decode and verify the JWT token using the same secret as creation
+        decoded_token = jwt.decode(
+            token, 
+            jwt_secret, 
+            algorithms=['HS256'],
+            options={"verify_exp": True}
+        )
         
-        # Validate token expiration if present
-        if 'exp' in user_data:
-            if time.time() > user_data['exp']:
-                logger.error("Custom token expired")
-                return None
-        
-        # Validate required fields
-        user_id = user_data.get('user_id') or user_data.get('uid')
+        # Validate required fields for custom tokens
+        user_id = decoded_token.get('user_id')
         if not user_id:
-            logger.error("Invalid custom token: missing user_id/uid")
+            logger.error("Invalid custom token: missing user_id")
             return None
         
         # Return standardized user data
         return {
-            'uid': user_id,
-            'email': user_data.get('email', ''),
-            'name': user_data.get('name') or user_data.get('email', '').split('@')[0] if user_data.get('email') else 'User',
-            'provider': 'custom'
+            'uid': str(user_id),  # Convert to string for consistency
+            'email': decoded_token.get('email', ''),
+            'name': decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User',
+            'provider': 'custom',
+            'user_id': user_id  # Keep original user_id for database lookup
         }
         
+    except jwt.ExpiredSignatureError:
+        logger.error("Custom token expired")
+        return None
+    except jwt.InvalidTokenError as e:
+        logger.error(f"Invalid custom token: {e}")
+        return None
     except Exception as e:
         logger.error(f"Custom token verification failed: {e}")
         return None
@@ -469,19 +475,19 @@ def require_auth(f):
         token = auth_header.split(' ')[1]
         user_data = None
         
-        # Try Supabase JWT verification first (most secure)
-        logger.debug("Attempting Supabase JWT verification...")
-        user_data = verify_supabase_token(token)
+        # Try custom JWT tokens first (created by our Google auth endpoint)
+        logger.debug("Attempting custom JWT verification...")
+        user_data = verify_custom_token(token)
+        
+        # If custom fails, try Supabase JWT verification
+        if not user_data:
+            logger.debug("Custom verification failed, trying Supabase JWT...")
+            user_data = verify_supabase_token(token)
         
         # If Supabase fails, try Firebase
         if not user_data:
             logger.debug("Supabase verification failed, trying Firebase...")
             user_data = verify_firebase_token(token)
-        
-        # If both fail, try custom token (development only)
-        if not user_data:
-            logger.debug("Firebase verification failed, trying custom token...")
-            user_data = verify_custom_token(token)
         
         # If all verification methods fail
         if not user_data:
@@ -490,9 +496,22 @@ def require_auth(f):
         
         # Get or create user in database
         try:
-            user = User.query.filter_by(firebase_uid=user_data['uid']).first()
+            user = None
+            
+            # For custom tokens (from our Google auth), look up by user_id first
+            if user_data.get('provider') == 'custom' and user_data.get('user_id'):
+                user = User.query.get(user_data['user_id'])
+                if user:
+                    logger.info(f"Found user by ID: {user.email}")
+            
+            # If not found by ID, try by firebase_uid (for Supabase/Firebase tokens)
             if not user:
-                # Create new user
+                user = User.query.filter_by(firebase_uid=user_data['uid']).first()
+                if user:
+                    logger.info(f"Found user by firebase_uid: {user.email}")
+            
+            # If still not found, create new user
+            if not user:
                 user = User(
                     firebase_uid=user_data['uid'],
                     email=user_data.get('email', ''),
@@ -966,7 +985,12 @@ def authenticate_with_google():
             db.session.commit()
             logger.info(f"User login: {user.email}")
         
-        # 3. Generate JWT
+        # 3. Generate JWT using Supabase JWT secret for consistency
+        jwt_secret = get_supabase_jwt_secret()
+        if not jwt_secret:
+            logger.error("Cannot generate token: Supabase JWT secret not configured")
+            return jsonify({'error': 'Server configuration error'}), 500
+        
         payload = {
             'user_id': user.id,
             'email': user.email,
@@ -974,7 +998,9 @@ def authenticate_with_google():
             'iat': datetime.utcnow()
         }
         
-        token = jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
+        token = jwt.encode(payload, jwt_secret, algorithm='HS256')
+        
+        logger.info(f"Generated JWT token for user {user.email} using Supabase secret")
         
         return jsonify({
             'message': 'Authentication successful',
