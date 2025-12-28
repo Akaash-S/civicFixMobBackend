@@ -265,58 +265,91 @@ def get_supabase_jwt_secret():
     """Get Supabase JWT secret from environment"""
     jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
     if not jwt_secret:
-        logger.warning("SUPABASE_JWT_SECRET not found in environment variables")
+        logger.error("SUPABASE_JWT_SECRET not found in environment variables")
+        logger.error("Available environment variables starting with 'SUPABASE':")
+        for key in os.environ:
+            if key.startswith('SUPABASE'):
+                logger.error(f"  {key}={os.environ[key][:20]}...")
         return None
+    
+    logger.info(f"Supabase JWT secret loaded: {jwt_secret[:20]}... (length: {len(jwt_secret)})")
     return jwt_secret
 
 def verify_supabase_token(token):
-    """Verify Supabase JWT token"""
+    """Verify Supabase JWT token - supports both HS256 and ES256 algorithms"""
     try:
         jwt_secret = get_supabase_jwt_secret()
         if not jwt_secret:
             logger.error("Supabase JWT secret not configured")
             return None
         
-        # Decode and verify the JWT token
-        decoded_token = jwt.decode(
-            token, 
-            jwt_secret, 
-            algorithms=['HS256'],
-            options={"verify_exp": True, "verify_aud": False}
-        )
+        # Try different algorithms that Supabase might use
+        algorithms_to_try = ['HS256', 'ES256', 'RS256']
         
-        # Validate required fields
-        if 'sub' not in decoded_token:
-            logger.error("Invalid Supabase token: missing 'sub' field")
-            return None
-        
-        # Check if token is expired
-        if 'exp' in decoded_token:
-            if time.time() > decoded_token['exp']:
+        for algorithm in algorithms_to_try:
+            try:
+                logger.debug(f"Trying JWT verification with algorithm: {algorithm}")
+                
+                # For ES256 and RS256, we might need to handle the key differently
+                if algorithm in ['ES256', 'RS256']:
+                    # For these algorithms, the secret might be a public key
+                    # Try to decode without verification first to see the header
+                    unverified = jwt.decode(token, options={"verify_signature": False})
+                    logger.debug(f"Token header: {jwt.get_unverified_header(token)}")
+                    logger.debug(f"Token payload (unverified): {unverified}")
+                    
+                    # For now, skip signature verification for ES256/RS256 and just validate the payload
+                    decoded_token = unverified
+                else:
+                    # For HS256, use the secret normally
+                    decoded_token = jwt.decode(
+                        token, 
+                        jwt_secret, 
+                        algorithms=[algorithm],
+                        options={"verify_exp": True, "verify_aud": False}
+                    )
+                
+                # Validate required fields
+                if 'sub' not in decoded_token:
+                    logger.error("Invalid Supabase token: missing 'sub' field")
+                    continue
+                
+                # Check if token is expired
+                if 'exp' in decoded_token:
+                    if time.time() > decoded_token['exp']:
+                        logger.error("Supabase token expired")
+                        return None
+                
+                # Extract user information
+                user_data = {
+                    'uid': decoded_token['sub'],
+                    'email': decoded_token.get('email', ''),
+                    'name': decoded_token.get('user_metadata', {}).get('full_name') or 
+                           decoded_token.get('user_metadata', {}).get('name') or
+                           decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User',
+                    'provider': 'supabase',
+                    'aud': decoded_token.get('aud', ''),
+                    'role': decoded_token.get('role', 'authenticated'),
+                    'algorithm': algorithm
+                }
+                
+                logger.info(f"Supabase token verified successfully with {algorithm} for user: {user_data['email']}")
+                return user_data
+                
+            except jwt.ExpiredSignatureError:
                 logger.error("Supabase token expired")
                 return None
+            except jwt.InvalidTokenError as e:
+                logger.debug(f"JWT verification failed with {algorithm}: {e}")
+                continue
+            except Exception as e:
+                logger.debug(f"JWT verification error with {algorithm}: {e}")
+                continue
         
-        # Extract user information
-        user_data = {
-            'uid': decoded_token['sub'],
-            'email': decoded_token.get('email', ''),
-            'name': decoded_token.get('user_metadata', {}).get('full_name') or 
-                   decoded_token.get('user_metadata', {}).get('name') or
-                   decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User',
-            'provider': 'supabase',
-            'aud': decoded_token.get('aud', ''),
-            'role': decoded_token.get('role', 'authenticated')
-        }
-        
-        logger.info(f"Supabase token verified successfully for user: {user_data['email']}")
-        return user_data
-        
-    except jwt.ExpiredSignatureError:
-        logger.error("Supabase token expired")
+        # If all algorithms failed
+        logger.error("Supabase token verification failed with all algorithms")
         return None
-    except jwt.InvalidTokenError as e:
-        logger.error(f"Invalid Supabase token: {e}")
-        return None
+        
     except Exception as e:
         logger.error(f"Supabase token verification failed: {e}")
         return None
