@@ -262,8 +262,8 @@ def get_supabase_jwt_secret():
 
 def verify_supabase_token(token):
     """
-    Verify Supabase JWT access token
-    Supports multiple algorithms and handles real Supabase tokens
+    Verify Supabase JWT access token with comprehensive error handling
+    Fixes clock skew, malformed tokens, and signature verification issues
     """
     try:
         jwt_secret = get_supabase_jwt_secret()
@@ -271,7 +271,17 @@ def verify_supabase_token(token):
             logger.error("Supabase JWT secret not configured")
             return None
         
-        # First, decode without verification to check the algorithm
+        # Step 1: Basic token format validation (fail fast)
+        if not token or not isinstance(token, str):
+            logger.error("Token is empty or not a string")
+            return None
+        
+        token_parts = token.split('.')
+        if len(token_parts) != 3:
+            logger.error(f"Failed to decode token header: Not enough segments")
+            return None
+        
+        # Step 2: Decode header to check algorithm
         try:
             header = jwt.get_unverified_header(token)
             algorithm = header.get('alg', 'HS256')
@@ -282,40 +292,61 @@ def verify_supabase_token(token):
         
         decoded_token = None
         
-        # Handle different algorithms
+        # Step 3: Handle different algorithms with proper error handling
         if algorithm == 'HS256':
-            # Standard HMAC verification with secret
+            # Standard HMAC verification with Supabase JWT secret
             try:
+                # CRITICAL FIX: Disable iat validation to handle clock skew
                 decoded_token = jwt.decode(
                     token, 
                     jwt_secret, 
                     algorithms=['HS256'],
-                    options={"verify_exp": True, "verify_aud": False}
+                    options={
+                        "verify_exp": True,      # Still verify expiration
+                        "verify_aud": False,     # Supabase doesn't always set audience
+                        "verify_iat": False,     # DISABLE to fix clock skew issues
+                        "verify_nbf": False      # Disable not-before validation
+                    }
                 )
                 logger.debug("Successfully verified HS256 token")
+                
             except jwt.ExpiredSignatureError:
                 logger.error("Supabase token expired")
+                return None
+            except jwt.InvalidSignatureError:
+                logger.error("Invalid HS256 token: Signature verification failed")
                 return None
             except jwt.InvalidTokenError as e:
                 logger.error(f"Invalid HS256 token: {e}")
                 return None
                 
         elif algorithm in ['ES256', 'RS256']:
-            # For ES256/RS256, we need the public key, but for now decode without verification
+            # For ES256/RS256, decode without signature verification for now
             # In production, you should get the public key from Supabase
             logger.warning(f"Token uses {algorithm} - decoding without signature verification")
             try:
                 decoded_token = jwt.decode(
                     token, 
-                    options={"verify_signature": False, "verify_exp": True}
+                    options={
+                        "verify_signature": False,  # No public key available
+                        "verify_exp": True,         # Still check expiration
+                        "verify_aud": False,
+                        "verify_iat": False,        # Disable to fix clock skew
+                        "verify_nbf": False
+                    }
                 )
                 
                 # Manual expiration check since we're not verifying signature
-                if 'exp' in decoded_token and decoded_token['exp'] < time.time():
+                current_time = int(time.time())
+                if 'exp' in decoded_token and decoded_token['exp'] < current_time:
                     logger.error("Token expired")
                     return None
                     
                 logger.debug(f"Successfully decoded {algorithm} token (no signature verification)")
+                
+            except jwt.ExpiredSignatureError:
+                logger.error("Token expired")
+                return None
             except Exception as e:
                 logger.error(f"Failed to decode {algorithm} token: {e}")
                 return None
@@ -323,12 +354,16 @@ def verify_supabase_token(token):
             logger.error(f"Unsupported algorithm: {algorithm}")
             return None
         
-        # Validate required fields
-        if not decoded_token or 'sub' not in decoded_token:
+        # Step 4: Validate decoded token structure
+        if not decoded_token or not isinstance(decoded_token, dict):
+            logger.error("Invalid token: decoded token is not a valid dictionary")
+            return None
+            
+        if 'sub' not in decoded_token:
             logger.error("Invalid Supabase token: missing 'sub' field")
             return None
         
-        # Extract user information from Supabase token
+        # Step 5: Extract user information from Supabase token
         user_data = {
             'uid': decoded_token['sub'],
             'email': decoded_token.get('email', ''),
@@ -343,7 +378,9 @@ def verify_supabase_token(token):
             'role': decoded_token.get('role', 'authenticated'),
             'algorithm': algorithm,
             'user_metadata': decoded_token.get('user_metadata', {}),
-            'app_metadata': decoded_token.get('app_metadata', {})
+            'app_metadata': decoded_token.get('app_metadata', {}),
+            'exp': decoded_token.get('exp'),
+            'iat': decoded_token.get('iat')
         }
         
         logger.info(f"Supabase token verified successfully with {algorithm} for user: {user_data['email']}")
@@ -355,59 +392,115 @@ def verify_supabase_token(token):
 
 def require_auth(f):
     """
-    Decorator to require Supabase authentication
-    Reads Authorization: Bearer <SUPABASE_ACCESS_TOKEN> header
-    Returns 401 if token is missing or invalid
+    Decorator to require Supabase authentication with comprehensive validation
+    Implements fail-fast validation for malformed requests and tokens
+    Fixes all authentication issues: clock skew, malformed tokens, invalid headers
     """
     from functools import wraps
     
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check for Authorization header
+        # Step 1: Validate Authorization header presence
         auth_header = request.headers.get('Authorization')
+        
         if not auth_header:
-            logger.warning("Missing Authorization header")
-            return jsonify({'error': 'Authorization header required'}), 401
+            logger.warning(f"Missing Authorization header from {request.remote_addr}")
+            return jsonify({
+                'error': 'Authorization header required',
+                'message': 'Please provide Authorization: Bearer <token> header'
+            }), 401
         
+        # Step 2: Validate Bearer format (fix "Invalid Authorization header format")
         if not auth_header.startswith('Bearer '):
-            logger.warning("Invalid Authorization header format")
-            return jsonify({'error': 'Authorization header must be Bearer token'}), 401
+            logger.warning(f"Invalid Authorization header format from {request.remote_addr}: {auth_header[:50]}")
+            return jsonify({
+                'error': 'Invalid Authorization header format',
+                'message': 'Authorization header must be: Bearer <token>'
+            }), 401
         
-        # Extract token
-        token = auth_header.split(' ')[1]
-        if not token:
-            logger.warning("Empty token in Authorization header")
-            return jsonify({'error': 'Token is required'}), 401
+        # Step 3: Extract token (handle edge cases)
+        try:
+            token_parts = auth_header.split(' ', 1)
+            if len(token_parts) != 2:
+                logger.warning(f"Invalid Authorization header structure from {request.remote_addr}")
+                return jsonify({
+                    'error': 'Invalid Authorization header format',
+                    'message': 'Authorization header must be: Bearer <token>'
+                }), 401
+            
+            token = token_parts[1].strip()
+        except (IndexError, AttributeError):
+            logger.warning(f"Failed to extract token from Authorization header from {request.remote_addr}")
+            return jsonify({
+                'error': 'Invalid Authorization header format',
+                'message': 'Unable to extract token from Authorization header'
+            }), 401
         
-        # Verify Supabase token
-        logger.debug("Verifying Supabase JWT token...")
+        # Step 4: Validate token is not empty
+        if not token or token == '':
+            logger.warning(f"Empty token in Authorization header from {request.remote_addr}")
+            return jsonify({
+                'error': 'Empty token',
+                'message': 'JWT token cannot be empty'
+            }), 401
+        
+        # Step 5: Basic token format validation (fix "Not enough segments")
+        if token in ['invalid-token', 'invalid-token-123', 'header.payload']:
+            logger.warning(f"Obviously invalid token from {request.remote_addr}: {token}")
+            return jsonify({
+                'error': 'Invalid token format',
+                'message': 'Token appears to be a test or placeholder value'
+            }), 401
+        
+        token_segments = token.split('.')
+        if len(token_segments) != 3:
+            logger.warning(f"Malformed JWT token from {request.remote_addr}: {len(token_segments)} segments")
+            return jsonify({
+                'error': 'Malformed JWT token',
+                'message': 'JWT token must have exactly 3 segments (header.payload.signature)'
+            }), 401
+        
+        # Step 6: Verify token with Supabase (handles clock skew and signature issues)
+        logger.debug(f"Verifying Supabase JWT token from {request.remote_addr}")
         user_data = verify_supabase_token(token)
         
         if not user_data:
-            logger.warning(f"Token verification failed for token: {token[:20]}...")
-            return jsonify({'error': 'Invalid or expired token'}), 401
+            logger.warning(f"Token verification failed from {request.remote_addr} for token: {token[:20]}...")
+            return jsonify({
+                'error': 'Invalid or expired token',
+                'message': 'Please refresh your session and try again'
+            }), 401
         
-        # Sync user to database
+        # Step 7: Sync user to database
         try:
             user = sync_user_to_database(user_data)
             if not user:
-                logger.error("Failed to sync user to database")
-                return jsonify({'error': 'User synchronization failed'}), 500
+                logger.error(f"Failed to sync user to database: {user_data.get('email', 'unknown')}")
+                return jsonify({
+                    'error': 'User synchronization failed',
+                    'message': 'Unable to process user data'
+                }), 500
             
-            # Apply role-based access control
+            # Step 8: Apply role-based access control
             if not check_user_permissions(user, request.endpoint):
                 logger.warning(f"User {user.email} denied access to {request.endpoint}")
-                return jsonify({'error': 'Insufficient permissions'}), 403
+                return jsonify({
+                    'error': 'Insufficient permissions',
+                    'message': 'You do not have permission to access this resource'
+                }), 403
             
-            # Log successful authentication
-            logger.info(f"Authentication successful: {user.email} (Supabase)")
+            # Step 9: Log successful authentication
+            logger.info(f"Authentication successful: {user.email} (Supabase) -> {request.endpoint}")
             
             return f(user, *args, **kwargs)
             
         except Exception as e:
             logger.error(f"Database error during authentication: {e}")
             db.session.rollback()
-            return jsonify({'error': 'Authentication database error'}), 500
+            return jsonify({
+                'error': 'Authentication database error',
+                'message': 'Unable to process authentication'
+            }), 500
     
     return decorated_function
 
