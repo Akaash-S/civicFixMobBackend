@@ -1,4 +1,4 @@
-# CivicFix Backend - AWS-First Production Dockerfile
+# CivicFix Backend - Supabase Authentication + AWS Infrastructure Dockerfile
 FROM python:3.11-slim
 
 # Set environment variables

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CivicFix Backend - AWS Setup Validation Script
-Validates AWS RDS and S3 connectivity before starting the application
+CivicFix Backend - Supabase + AWS Setup Validation Script
+Validates Supabase authentication, AWS RDS and S3 connectivity before starting the application
 """
 
 import os
@@ -26,8 +26,7 @@ def validate_environment_variables():
         'AWS_SECRET_ACCESS_KEY',
         'AWS_S3_BUCKET_NAME',
         'AWS_REGION',
-        'FIREBASE_SERVICE_ACCOUNT_B64',
-        'FIREBASE_PROJECT_ID'
+        'SUPABASE_JWT_SECRET'
     ]
     
     missing_vars = []
@@ -130,91 +129,43 @@ def validate_s3_connection():
         print(f"❌ S3 connection failed: {e}")
         return False
 
-def validate_firebase_config():
-    """Validate Firebase configuration by actually initializing Firebase"""
+def validate_supabase_config():
+    """Validate Supabase JWT secret configuration"""
     try:
-        import base64
-        import json
+        jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
         
-        b64_creds = os.environ.get('FIREBASE_SERVICE_ACCOUNT_B64')
-        project_id = os.environ.get('FIREBASE_PROJECT_ID')
-        
-        if not b64_creds or not project_id:
-            print("❌ Firebase configuration incomplete")
+        if not jwt_secret:
+            print("❌ SUPABASE_JWT_SECRET not configured")
             return False
         
-        # Try to decode base64 credentials
-        try:
-            json_str = base64.b64decode(b64_creds).decode('utf-8')
-            cred_dict = json.loads(json_str)
-            
-            if 'project_id' not in cred_dict:
-                print("❌ Invalid Firebase service account JSON")
-                return False
-            
-            # Actually test Firebase initialization
-            try:
-                import firebase_admin
-                from firebase_admin import credentials
-                
-                # Try to initialize Firebase with the credentials
-                cred = credentials.Certificate(cred_dict)
-                
-                # Check if Firebase is already initialized
-                try:
-                    firebase_admin.get_app()
-                    firebase_admin.delete_app(firebase_admin.get_app())
-                except ValueError:
-                    pass  # No app initialized yet
-                
-                # Initialize Firebase
-                app = firebase_admin.initialize_app(cred)
-                
-                # Test basic functionality
-                from firebase_admin import auth
-                # This will fail if credentials are invalid
-                auth.get_user_by_email("nonexistent@example.com")
-                
-            except firebase_admin.exceptions.FirebaseError as e:
-                if "USER_NOT_FOUND" in str(e) or "No user record found" in str(e):
-                    # This is expected - means Firebase is working
-                    print("✅ Firebase configuration valid and working")
-                    print(f"   Project ID: {project_id}")
-                    return True
-                else:
-                    print(f"❌ Firebase error: {e}")
-                    return False
-            except Exception as e:
-                if "Unable to load PEM file" in str(e) or "InvalidData" in str(e):
-                    print(f"❌ Firebase private key is malformed: {e}")
-                    print("   The private key in your service account JSON may be corrupted")
-                    return False
-                else:
-                    print(f"❌ Firebase initialization failed: {e}")
-                    return False
-            
-            print("✅ Firebase configuration valid")
-            print(f"   Project ID: {project_id}")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Invalid Firebase credentials format: {e}")
+        # Check if it looks like a valid Supabase JWT secret
+        if not jwt_secret.startswith('sb_secret_'):
+            print("⚠️ JWT secret doesn't look like a Supabase secret (should start with 'sb_secret_')")
+            print("   This might still work if it's a valid secret")
+        
+        # Check minimum length
+        if len(jwt_secret) < 32:
+            print("❌ JWT secret is too short (should be at least 32 characters)")
             return False
-            
-    except ImportError:
-        print("⚠️ Firebase Admin SDK not installed - authentication will be disabled")
+        
+        print("✅ Supabase JWT secret configured")
+        print(f"   Secret: {jwt_secret[:20]}... (length: {len(jwt_secret)})")
         return True
+        
+    except Exception as e:
+        print(f"❌ Supabase configuration validation failed: {e}")
+        return False
 
 def main():
     """Main validation function"""
-    print("🔍 CivicFix Backend - AWS Setup Validation")
+    print("🔍 CivicFix Backend - Supabase + AWS Setup Validation")
     print("=" * 50)
     
     validations = [
         ("Environment Variables", validate_environment_variables),
         ("AWS RDS Connection", validate_rds_connection),
         ("AWS S3 Connection", validate_s3_connection),
-        ("Firebase Configuration", validate_firebase_config)
+        ("Supabase Configuration", validate_supabase_config)
     ]
     
     all_passed = True
@@ -228,12 +179,15 @@ def main():
     
     if all_passed:
         print("🎉 All validations passed! Backend is ready to start.")
+        print("✅ Supabase authentication configured")
+        print("✅ AWS RDS database connected")
+        print("✅ AWS S3 storage accessible")
         print("\nYou can now run:")
         print("  python app.py")
         sys.exit(0)
     else:
         print("❌ Some validations failed. Please fix the issues above.")
-        print("\nRefer to AWS_SETUP_GUIDE.md for setup instructions.")
+        print("\nRefer to SUPABASE_AUTH_IMPLEMENTATION.md for setup instructions.")
         sys.exit(1)
 
 if __name__ == "__main__":

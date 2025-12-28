@@ -1,24 +1,24 @@
 #!/bin/bash
 # CivicFix Backend - Docker Startup Script
-# Validates AWS setup before starting the application
+# Validates Supabase + AWS setup before starting the application
 
 set -e
 
-echo "🚀 CivicFix Backend - Starting with AWS validation..."
+echo "🚀 CivicFix Backend - Starting with Supabase + AWS validation..."
 
 # Run AWS validation (optional - can be skipped with SKIP_VALIDATION=true)
 if [ "$SKIP_VALIDATION" != "true" ]; then
-    echo "🔍 Validating AWS setup..."
+    echo "🔍 Validating Supabase + AWS setup..."
     python validate_aws_setup.py
     
     if [ $? -ne 0 ]; then
-        echo "❌ AWS validation failed. Set SKIP_VALIDATION=true to bypass."
+        echo "❌ Supabase + AWS validation failed. Set SKIP_VALIDATION=true to bypass."
         exit 1
     fi
     
-    echo "✅ AWS validation passed!"
+    echo "✅ Supabase + AWS validation passed!"
 else
-    echo "⚠️ Skipping AWS validation (SKIP_VALIDATION=true)"
+    echo "⚠️ Skipping Supabase + AWS validation (SKIP_VALIDATION=true)"
 fi
 
 # Run database migration if needed
