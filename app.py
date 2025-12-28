@@ -323,8 +323,11 @@ def init_firebase():
         app._firebase_initialized = True
 
 def require_auth(f):
-    """Decorator to require Firebase authentication"""
+    """Decorator to require authentication (Firebase or Supabase)"""
     from functools import wraps
+    import base64
+    import json
+    import binascii
     
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -333,6 +336,48 @@ def require_auth(f):
             return jsonify({'error': 'Authorization header required'}), 401
         
         token = auth_header.split(' ')[1]
+        
+        # Try to decode the token as a simple JWT-like structure first (for Supabase compatibility)
+        try:
+            # Check if it's a base64 encoded JSON (simple token from frontend)
+            try:
+                decoded_data = base64.b64decode(token).decode('utf-8')
+                user_data = json.loads(decoded_data)
+                
+                # Validate token expiration if present
+                if 'exp' in user_data:
+                    import time
+                    if time.time() > user_data['exp']:
+                        return jsonify({'error': 'Token expired'}), 401
+                
+                # Get or create user based on the token data
+                user_id = user_data.get('user_id') or user_data.get('uid')
+                email = user_data.get('email', '')
+                
+                if not user_id:
+                    return jsonify({'error': 'Invalid token format'}), 401
+                
+                user = User.query.filter_by(firebase_uid=user_id).first()
+                if not user:
+                    user = User(
+                        firebase_uid=user_id,
+                        email=email,
+                        name=email.split('@')[0] if email else 'User'
+                    )
+                    db.session.add(user)
+                    db.session.commit()
+                    logger.info(f"Created new user: {user.email}")
+                
+                return f(user, *args, **kwargs)
+                
+            except (binascii.Error, json.JSONDecodeError, ValueError):
+                # If base64 decoding fails, try Firebase token verification
+                pass
+        
+        except Exception as e:
+            logger.debug(f"Simple token verification failed: {e}")
+        
+        # Fallback to Firebase token verification
         user_data = verify_firebase_token(token)
         
         if not user_data:
@@ -396,6 +441,21 @@ def health():
             'firebase': firebase_status,
             's3': s3_status
         }
+    })
+
+@app.route('/api/v1/auth/test', methods=['GET'])
+@require_auth
+def test_auth(current_user):
+    """Test authentication endpoint"""
+    return jsonify({
+        'message': 'Authentication successful',
+        'user': {
+            'id': current_user.id,
+            'email': current_user.email,
+            'name': current_user.name,
+            'firebase_uid': current_user.firebase_uid
+        },
+        'timestamp': datetime.utcnow().isoformat()
     })
 
 # ================================
@@ -581,23 +641,46 @@ def create_issue(current_user):
         data = request.get_json()
         
         if not data:
+            logger.warning("Create issue request with no JSON data")
             return jsonify({'error': 'Request body required'}), 400
+        
+        logger.info(f"Creating issue for user {current_user.email} with data: {data}")
         
         # Validate required fields
         required_fields = ['title', 'category', 'latitude', 'longitude']
+        missing_fields = []
         for field in required_fields:
-            if field not in data:
-                return jsonify({'error': f'{field} is required'}), 400
+            if field not in data or not data[field]:
+                missing_fields.append(field)
+        
+        if missing_fields:
+            error_msg = f'Missing required fields: {", ".join(missing_fields)}'
+            logger.warning(f"Create issue validation failed: {error_msg}")
+            return jsonify({'error': error_msg}), 400
+        
+        # Validate data types
+        try:
+            latitude = float(data['latitude'])
+            longitude = float(data['longitude'])
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid latitude/longitude values: {e}")
+            return jsonify({'error': 'Invalid latitude or longitude values'}), 400
+        
+        # Validate priority
+        valid_priorities = ['low', 'medium', 'high', 'critical']
+        priority = data.get('priority', 'medium').lower()
+        if priority not in valid_priorities:
+            priority = 'medium'
         
         # Create issue
         issue = Issue(
-            title=data['title'],
-            description=data.get('description', ''),
-            category=data['category'],
-            latitude=float(data['latitude']),
-            longitude=float(data['longitude']),
-            address=data.get('address', ''),
-            priority=data.get('priority', 'MEDIUM'),
+            title=data['title'].strip(),
+            description=data.get('description', '').strip(),
+            category=data['category'].strip(),
+            latitude=latitude,
+            longitude=longitude,
+            address=data.get('address', '').strip(),
+            priority=priority.upper(),
             created_by=current_user.id
         )
         
@@ -613,12 +696,15 @@ def create_issue(current_user):
             if data['image_url'] not in image_urls:
                 image_urls.append(data['image_url'])
         
+        # Filter out empty URLs
+        image_urls = [url for url in image_urls if url and url.strip()]
+        
         issue.set_image_urls(image_urls)
         
         db.session.add(issue)
         db.session.commit()
         
-        logger.info(f"Issue created: {issue.id} by user {current_user.email}")
+        logger.info(f"Issue created successfully: ID {issue.id} by user {current_user.email}")
         
         return jsonify({
             'message': 'Issue created successfully',
@@ -626,7 +712,7 @@ def create_issue(current_user):
         }), 201
         
     except Exception as e:
-        logger.error(f"Error creating issue: {e}")
+        logger.error(f"Error creating issue: {str(e)}", exc_info=True)
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
