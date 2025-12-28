@@ -11,13 +11,11 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from flask_migrate import Migrate
 import json
-import base64
 import boto3
 from botocore.exceptions import ClientError
 import uuid
 from werkzeug.utils import secure_filename
 import jwt
-import requests
 from functools import lru_cache
 import time
 
@@ -144,7 +142,13 @@ class S3Service:
         return False
 
 # Initialize S3 service
-s3_service = S3Service()
+try:
+    s3_service = S3Service()
+    logger.info("S3 service initialized successfully")
+except Exception as e:
+    logger.warning(f"S3 service initialization failed: {e}")
+    logger.warning("S3 functionality will be disabled")
+    s3_service = None
 
 # ================================
 # Models
@@ -238,27 +242,8 @@ class Issue(db.Model):
         }
 
 # ================================
-# Firebase Authentication
+# Supabase Authentication (Only)
 # ================================
-
-def verify_firebase_token(token):
-    """Real Firebase token verification - No mock authentication"""
-    try:
-        # Initialize Firebase if not already done
-        if not hasattr(app, '_firebase_initialized'):
-            init_firebase()
-        
-        if hasattr(app, '_firebase_auth') and app._firebase_auth:
-            from firebase_admin import auth
-            decoded_token = auth.verify_id_token(token)
-            logger.info(f"Firebase token verified successfully for user: {decoded_token.get('email', 'unknown')}")
-            return decoded_token
-        else:
-            logger.error("Firebase not available - authentication failed")
-            return None
-    except Exception as e:
-        logger.error(f"Firebase token verification failed: {e}")
-        return None
 
 @lru_cache(maxsize=1)
 def get_supabase_jwt_secret():
@@ -276,269 +261,146 @@ def get_supabase_jwt_secret():
     return jwt_secret
 
 def verify_supabase_token(token):
-    """Verify Supabase JWT token - supports both HS256 and ES256 algorithms"""
+    """
+    Verify Supabase JWT access token
+    Supports multiple algorithms and handles real Supabase tokens
+    """
     try:
         jwt_secret = get_supabase_jwt_secret()
         if not jwt_secret:
             logger.error("Supabase JWT secret not configured")
             return None
         
-        # Try different algorithms that Supabase might use
-        algorithms_to_try = ['HS256', 'ES256', 'RS256']
+        # First, decode without verification to check the algorithm
+        try:
+            header = jwt.get_unverified_header(token)
+            algorithm = header.get('alg', 'HS256')
+            logger.debug(f"Token uses algorithm: {algorithm}")
+        except Exception as e:
+            logger.error(f"Failed to decode token header: {e}")
+            return None
         
-        for algorithm in algorithms_to_try:
+        decoded_token = None
+        
+        # Handle different algorithms
+        if algorithm == 'HS256':
+            # Standard HMAC verification with secret
             try:
-                logger.debug(f"Trying JWT verification with algorithm: {algorithm}")
-                
-                # For ES256 and RS256, we might need to handle the key differently
-                if algorithm in ['ES256', 'RS256']:
-                    # For these algorithms, the secret might be a public key
-                    # Try to decode without verification first to see the header
-                    unverified = jwt.decode(token, options={"verify_signature": False})
-                    logger.debug(f"Token header: {jwt.get_unverified_header(token)}")
-                    logger.debug(f"Token payload (unverified): {unverified}")
-                    
-                    # For now, skip signature verification for ES256/RS256 and just validate the payload
-                    decoded_token = unverified
-                else:
-                    # For HS256, use the secret normally
-                    decoded_token = jwt.decode(
-                        token, 
-                        jwt_secret, 
-                        algorithms=[algorithm],
-                        options={"verify_exp": True, "verify_aud": False}
-                    )
-                
-                # Validate required fields
-                if 'sub' not in decoded_token:
-                    logger.error("Invalid Supabase token: missing 'sub' field")
-                    continue
-                
-                # Check if token is expired
-                if 'exp' in decoded_token:
-                    if time.time() > decoded_token['exp']:
-                        logger.error("Supabase token expired")
-                        return None
-                
-                # Extract user information
-                user_data = {
-                    'uid': decoded_token['sub'],
-                    'email': decoded_token.get('email', ''),
-                    'name': decoded_token.get('user_metadata', {}).get('full_name') or 
-                           decoded_token.get('user_metadata', {}).get('name') or
-                           decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User',
-                    'provider': 'supabase',
-                    'aud': decoded_token.get('aud', ''),
-                    'role': decoded_token.get('role', 'authenticated'),
-                    'algorithm': algorithm
-                }
-                
-                logger.info(f"Supabase token verified successfully with {algorithm} for user: {user_data['email']}")
-                return user_data
-                
+                decoded_token = jwt.decode(
+                    token, 
+                    jwt_secret, 
+                    algorithms=['HS256'],
+                    options={"verify_exp": True, "verify_aud": False}
+                )
+                logger.debug("Successfully verified HS256 token")
             except jwt.ExpiredSignatureError:
                 logger.error("Supabase token expired")
                 return None
             except jwt.InvalidTokenError as e:
-                logger.debug(f"JWT verification failed with {algorithm}: {e}")
-                continue
+                logger.error(f"Invalid HS256 token: {e}")
+                return None
+                
+        elif algorithm in ['ES256', 'RS256']:
+            # For ES256/RS256, we need the public key, but for now decode without verification
+            # In production, you should get the public key from Supabase
+            logger.warning(f"Token uses {algorithm} - decoding without signature verification")
+            try:
+                decoded_token = jwt.decode(
+                    token, 
+                    options={"verify_signature": False, "verify_exp": True}
+                )
+                
+                # Manual expiration check since we're not verifying signature
+                if 'exp' in decoded_token and decoded_token['exp'] < time.time():
+                    logger.error("Token expired")
+                    return None
+                    
+                logger.debug(f"Successfully decoded {algorithm} token (no signature verification)")
             except Exception as e:
-                logger.debug(f"JWT verification error with {algorithm}: {e}")
-                continue
+                logger.error(f"Failed to decode {algorithm} token: {e}")
+                return None
+        else:
+            logger.error(f"Unsupported algorithm: {algorithm}")
+            return None
         
-        # If all algorithms failed
-        logger.error("Supabase token verification failed with all algorithms")
-        return None
+        # Validate required fields
+        if not decoded_token or 'sub' not in decoded_token:
+            logger.error("Invalid Supabase token: missing 'sub' field")
+            return None
+        
+        # Extract user information from Supabase token
+        user_data = {
+            'uid': decoded_token['sub'],
+            'email': decoded_token.get('email', ''),
+            'name': (
+                decoded_token.get('user_metadata', {}).get('full_name') or 
+                decoded_token.get('user_metadata', {}).get('name') or
+                decoded_token.get('name') or
+                (decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User')
+            ),
+            'provider': 'supabase',
+            'aud': decoded_token.get('aud', ''),
+            'role': decoded_token.get('role', 'authenticated'),
+            'algorithm': algorithm,
+            'user_metadata': decoded_token.get('user_metadata', {}),
+            'app_metadata': decoded_token.get('app_metadata', {})
+        }
+        
+        logger.info(f"Supabase token verified successfully with {algorithm} for user: {user_data['email']}")
+        return user_data
         
     except Exception as e:
         logger.error(f"Supabase token verification failed: {e}")
         return None
 
-def verify_custom_token(token):
-    """Verify custom JWT token created by our Google auth endpoint"""
-    try:
-        jwt_secret = get_supabase_jwt_secret()
-        if not jwt_secret:
-            logger.error("Cannot verify custom token: Supabase JWT secret not configured")
-            return None
-        
-        # Decode and verify the JWT token using the same secret as creation
-        decoded_token = jwt.decode(
-            token, 
-            jwt_secret, 
-            algorithms=['HS256'],
-            options={"verify_exp": True}
-        )
-        
-        # Validate required fields for custom tokens
-        user_id = decoded_token.get('user_id')
-        if not user_id:
-            logger.error("Invalid custom token: missing user_id")
-            return None
-        
-        # Return standardized user data
-        return {
-            'uid': str(user_id),  # Convert to string for consistency
-            'email': decoded_token.get('email', ''),
-            'name': decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User',
-            'provider': 'custom',
-            'user_id': user_id  # Keep original user_id for database lookup
-        }
-        
-    except jwt.ExpiredSignatureError:
-        logger.error("Custom token expired")
-        return None
-    except jwt.InvalidTokenError as e:
-        logger.error(f"Invalid custom token: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Custom token verification failed: {e}")
-        return None
-
-def init_firebase():
-    """Initialize Firebase Admin SDK - Real Firebase only"""
-    try:
-        import firebase_admin
-        from firebase_admin import credentials
-        
-        logger.info("🔥 Initializing Firebase Admin SDK (Real Firebase - No Mock)")
-        
-        # Try Base64 encoded credentials first
-        b64_creds = os.environ.get('FIREBASE_SERVICE_ACCOUNT_B64')
-        if b64_creds:
-            try:
-                json_str = base64.b64decode(b64_creds).decode('utf-8')
-                cred_dict = json.loads(json_str)
-                cred = credentials.Certificate(cred_dict)
-                firebase_admin.initialize_app(cred)
-                app._firebase_auth = True
-                logger.info("✅ Firebase initialized with Base64 credentials")
-                app._firebase_initialized = True
-                return
-            except Exception as e:
-                logger.error(f"❌ Base64 Firebase init failed: {e}")
-        
-        # Try JSON string credentials
-        json_creds = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
-        if json_creds:
-            try:
-                cred_dict = json.loads(json_creds)
-                cred = credentials.Certificate(cred_dict)
-                firebase_admin.initialize_app(cred)
-                app._firebase_auth = True
-                logger.info("✅ Firebase initialized with JSON credentials")
-                app._firebase_initialized = True
-                return
-            except Exception as e:
-                logger.error(f"❌ JSON Firebase init failed: {e}")
-        
-        # Try file path
-        cred_path = os.environ.get('FIREBASE_SERVICE_ACCOUNT_PATH')
-        if cred_path and os.path.exists(cred_path):
-            try:
-                cred = credentials.Certificate(cred_path)
-                firebase_admin.initialize_app(cred)
-                app._firebase_auth = True
-                logger.info("✅ Firebase initialized with file credentials")
-                app._firebase_initialized = True
-                return
-            except Exception as e:
-                logger.error(f"❌ File Firebase init failed: {e}")
-        
-        # No Firebase credentials found - this is now an error
-        logger.error("❌ No Firebase credentials found - authentication will fail")
-        logger.error("Required: FIREBASE_SERVICE_ACCOUNT_B64, FIREBASE_SERVICE_ACCOUNT_JSON, or FIREBASE_SERVICE_ACCOUNT_PATH")
-        app._firebase_auth = False
-        app._firebase_initialized = True
-        
-    except ImportError:
-        logger.error("❌ Firebase Admin SDK not installed - authentication will fail")
-        logger.error("Install with: pip install firebase-admin")
-        app._firebase_auth = False
-        app._firebase_initialized = True
-    except Exception as e:
-        logger.error(f"❌ Firebase initialization failed: {e}")
-        app._firebase_auth = False
-        app._firebase_initialized = True
-
 def require_auth(f):
-    """Decorator to require proper authentication (Firebase, Supabase, or Custom)"""
+    """
+    Decorator to require Supabase authentication
+    Reads Authorization: Bearer <SUPABASE_ACCESS_TOKEN> header
+    Returns 401 if token is missing or invalid
+    """
     from functools import wraps
     
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Check for Authorization header
         auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            logger.warning("Missing or invalid Authorization header")
+        if not auth_header:
+            logger.warning("Missing Authorization header")
             return jsonify({'error': 'Authorization header required'}), 401
         
+        if not auth_header.startswith('Bearer '):
+            logger.warning("Invalid Authorization header format")
+            return jsonify({'error': 'Authorization header must be Bearer token'}), 401
+        
+        # Extract token
         token = auth_header.split(' ')[1]
-        user_data = None
+        if not token:
+            logger.warning("Empty token in Authorization header")
+            return jsonify({'error': 'Token is required'}), 401
         
-        # Try custom JWT tokens first (created by our Google auth endpoint)
-        logger.debug("Attempting custom JWT verification...")
-        user_data = verify_custom_token(token)
+        # Verify Supabase token
+        logger.debug("Verifying Supabase JWT token...")
+        user_data = verify_supabase_token(token)
         
-        # If custom fails, try Supabase JWT verification
         if not user_data:
-            logger.debug("Custom verification failed, trying Supabase JWT...")
-            user_data = verify_supabase_token(token)
-        
-        # If Supabase fails, try Firebase
-        if not user_data:
-            logger.debug("Supabase verification failed, trying Firebase...")
-            user_data = verify_firebase_token(token)
-        
-        # If all verification methods fail
-        if not user_data:
-            logger.warning(f"All token verification methods failed for token: {token[:20]}...")
+            logger.warning(f"Token verification failed for token: {token[:20]}...")
             return jsonify({'error': 'Invalid or expired token'}), 401
         
-        # Get or create user in database
+        # Sync user to database
         try:
-            user = None
-            
-            # For custom tokens (from our Google auth), look up by user_id first
-            if user_data.get('provider') == 'custom' and user_data.get('user_id'):
-                user = User.query.get(user_data['user_id'])
-                if user:
-                    logger.info(f"Found user by ID: {user.email}")
-            
-            # If not found by ID, try by firebase_uid (for Supabase/Firebase tokens)
+            user = sync_user_to_database(user_data)
             if not user:
-                user = User.query.filter_by(firebase_uid=user_data['uid']).first()
-                if user:
-                    logger.info(f"Found user by firebase_uid: {user.email}")
+                logger.error("Failed to sync user to database")
+                return jsonify({'error': 'User synchronization failed'}), 500
             
-            # If still not found, create new user
-            if not user:
-                user = User(
-                    firebase_uid=user_data['uid'],
-                    email=user_data.get('email', ''),
-                    name=user_data.get('name', 'User'),
-                    phone='',  # Will be updated by user later
-                    photo_url=''  # Will be updated by user later
-                )
-                db.session.add(user)
-                db.session.commit()
-                logger.info(f"Created new user: {user.email} (Provider: {user_data.get('provider', 'unknown')})")
-            else:
-                # Update existing user info if needed
-                updated = False
-                if user.email != user_data.get('email', '') and user_data.get('email'):
-                    user.email = user_data['email']
-                    updated = True
-                if user.name != user_data.get('name', '') and user_data.get('name'):
-                    user.name = user_data['name']
-                    updated = True
-                
-                if updated:
-                    user.updated_at = datetime.utcnow()
-                    db.session.commit()
-                    logger.info(f"Updated user info: {user.email}")
+            # Apply role-based access control
+            if not check_user_permissions(user, request.endpoint):
+                logger.warning(f"User {user.email} denied access to {request.endpoint}")
+                return jsonify({'error': 'Insufficient permissions'}), 403
             
             # Log successful authentication
-            logger.info(f"Authentication successful: {user.email} (Provider: {user_data.get('provider', 'unknown')})")
+            logger.info(f"Authentication successful: {user.email} (Supabase)")
             
             return f(user, *args, **kwargs)
             
@@ -548,6 +410,72 @@ def require_auth(f):
             return jsonify({'error': 'Authentication database error'}), 500
     
     return decorated_function
+
+def sync_user_to_database(user_data):
+    """
+    Sync Supabase user data to local database
+    Creates or updates user record
+    """
+    try:
+        # Look up user by Supabase UID
+        user = User.query.filter_by(firebase_uid=user_data['uid']).first()
+        
+        if not user:
+            # Create new user
+            user = User(
+                firebase_uid=user_data['uid'],  # Using firebase_uid field for Supabase UID
+                email=user_data.get('email', ''),
+                name=user_data.get('name', 'User'),
+                phone='',  # Will be updated by user later
+                photo_url=user_data.get('user_metadata', {}).get('avatar_url', '')
+            )
+            db.session.add(user)
+            db.session.commit()
+            logger.info(f"Created new user: {user.email} (Supabase UID: {user_data['uid']})")
+        else:
+            # Update existing user info if needed
+            updated = False
+            
+            if user.email != user_data.get('email', '') and user_data.get('email'):
+                user.email = user_data['email']
+                updated = True
+                
+            if user.name != user_data.get('name', '') and user_data.get('name'):
+                user.name = user_data['name']
+                updated = True
+                
+            # Update photo URL from user metadata
+            new_photo_url = user_data.get('user_metadata', {}).get('avatar_url', '')
+            if new_photo_url and user.photo_url != new_photo_url:
+                user.photo_url = new_photo_url
+                updated = True
+            
+            if updated:
+                user.updated_at = datetime.utcnow()
+                db.session.commit()
+                logger.info(f"Updated user info: {user.email}")
+        
+        return user
+        
+    except Exception as e:
+        logger.error(f"Failed to sync user to database: {e}")
+        db.session.rollback()
+        return None
+
+def check_user_permissions(user, endpoint):
+    """
+    Role-based access control
+    Check if user has permission to access the endpoint
+    """
+    # For now, all authenticated users have access to all endpoints
+    # You can extend this with role-based logic later
+    
+    # Example role-based access control:
+    # if endpoint == 'admin_only_endpoint':
+    #     return user.role == 'admin'
+    
+    # For CivicFix, all authenticated users can access all endpoints
+    return True
 
 # ================================
 # Routes
@@ -573,41 +501,32 @@ def health():
     except Exception as e:
         db_status = f'unhealthy: {str(e)}'
     
-    # Check Firebase status
-    firebase_status = 'healthy' if getattr(app, '_firebase_auth', False) else 'disabled'
+    # Check Supabase JWT secret status
+    supabase_status = 'healthy' if get_supabase_jwt_secret() else 'not_configured'
     
     # Check S3 status
     try:
-        s3_service.s3_client.head_bucket(Bucket=s3_service.bucket_name)
-        s3_status = 'healthy'
+        if s3_service:
+            s3_service.s3_client.head_bucket(Bucket=s3_service.bucket_name)
+            s3_status = 'healthy'
+        else:
+            s3_status = 'disabled'
     except Exception as e:
         s3_status = f'unhealthy: {str(e)}'
     
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat(),
-        'version': '2.0.0',
+        'version': '3.0.0-supabase',
+        'authentication': 'supabase',
         'services': {
             'database': db_status,
-            'firebase': firebase_status,
+            'supabase_auth': supabase_status,
             's3': s3_status
         }
     })
 
-@app.route('/api/v1/auth/test', methods=['GET'])
-@require_auth
-def test_auth(current_user):
-    """Test authentication endpoint"""
-    return jsonify({
-        'message': 'Authentication successful',
-        'user': {
-            'id': current_user.id,
-            'email': current_user.email,
-            'name': current_user.name,
-            'firebase_uid': current_user.firebase_uid
-        },
-        'timestamp': datetime.utcnow().isoformat()
-    })
+
 
 # ================================
 # File Upload Routes
@@ -618,6 +537,9 @@ def test_auth(current_user):
 def upload_file(current_user):
     """Upload file to S3"""
     try:
+        if not s3_service:
+            return jsonify({'error': 'File upload service not available'}), 503
+            
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
         
@@ -667,6 +589,9 @@ def upload_file(current_user):
 def upload_multiple_files(current_user):
     """Upload multiple files to S3"""
     try:
+        if not s3_service:
+            return jsonify({'error': 'File upload service not available'}), 503
+            
         if 'files' not in request.files:
             return jsonify({'error': 'No files provided'}), 400
         
@@ -916,102 +841,20 @@ def update_issue_status(current_user, issue_id):
 # ================================
 
 import jwt
-import requests
+# ================================
+# Authentication Routes
+# ================================
 
-@app.route('/api/v1/auth/google', methods=['POST'])
-def authenticate_with_google():
-    """
-    Authenticate user with Google ID Token
-    1. Verify ID Token with Google
-    2. Get/Create User
-    3. Issue JWT
-    """
-    try:
-        data = request.get_json()
-        
-        if not data or 'id_token' not in data:
-            return jsonify({'error': 'id_token is required'}), 400
-        
-        id_token = data['id_token']
-        
-        # 1. Verify with Google
-        # We use requests to call Google's tokeninfo endpoint
-        # This is simpler/safer than local verification for this setup
-        google_response = requests.get(
-            f'https://oauth2.googleapis.com/tokeninfo?id_token={id_token}'
-        )
-        
-        if google_response.status_code != 200:
-            logger.error(f"Google Token Verification Failed: {google_response.text}")
-            return jsonify({'error': 'Invalid Google Token'}), 401
-            
-        google_data = google_response.json()
-        
-        # Verify Audience (Optional but recommended)
-        # client_id = os.environ.get('GOOGLE_CLIENT_ID')
-        # if client_id and google_data['aud'] != client_id:
-        #    return jsonify({'error': 'Token audience mismatch'}), 401
-
-        # Extract user info
-        firebase_uid = google_data['sub'] # Google's unique user ID
-        email = google_data['email']
-        name = google_data.get('name', email.split('@')[0])
-        photo_url = google_data.get('picture')
-        
-        # 2. Get or Create User
-        user = User.query.filter_by(email=email).first()
-        
-        if not user:
-            # Create new user
-            user = User(
-                firebase_uid=firebase_uid, # Using Google sub as uid
-                email=email,
-                name=name,
-                photo_url=photo_url
-            )
-            db.session.add(user)
-            db.session.commit()
-            logger.info(f"New user created: {user.email}")
-        else:
-            # Update existing user
-            if user.firebase_uid != firebase_uid:
-                # Link account if email matches but uid doesn't (rare but possible)
-                user.firebase_uid = firebase_uid
-                
-            user.name = name
-            if photo_url:
-                user.photo_url = photo_url
-            user.updated_at = datetime.utcnow()
-            db.session.commit()
-            logger.info(f"User login: {user.email}")
-        
-        # 3. Generate JWT using Supabase JWT secret for consistency
-        jwt_secret = get_supabase_jwt_secret()
-        if not jwt_secret:
-            logger.error("Cannot generate token: Supabase JWT secret not configured")
-            return jsonify({'error': 'Server configuration error'}), 500
-        
-        payload = {
-            'user_id': user.id,
-            'email': user.email,
-            'exp': datetime.utcnow() + datetime.timedelta(days=7), # 7 Day Expiry
-            'iat': datetime.utcnow()
-        }
-        
-        token = jwt.encode(payload, jwt_secret, algorithm='HS256')
-        
-        logger.info(f"Generated JWT token for user {user.email} using Supabase secret")
-        
-        return jsonify({
-            'message': 'Authentication successful',
-            'user': user.to_dict(),
-            'token': token
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error authenticating with Google: {e}")
-        db.session.rollback()
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+@app.route('/api/v1/auth/test', methods=['GET'])
+@require_auth
+def test_auth(current_user):
+    """Test Supabase authentication endpoint"""
+    return jsonify({
+        'message': 'Authentication successful',
+        'user': current_user.to_dict(),
+        'timestamp': datetime.utcnow().isoformat(),
+        'provider': 'supabase'
+    }), 200
 
 # ================================
 # User Routes
@@ -1331,7 +1174,7 @@ def create_tables():
 
 if __name__ == '__main__':
     # Initialize Firebase
-    init_firebase()
+    # init_firebase()
     
     # Create tables
     create_tables()

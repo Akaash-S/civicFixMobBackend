@@ -59,7 +59,7 @@ Thumbs.db
 
 
 service-account.json
-
+deploy_auth_fix.sh
 # Testing
 .pytest_cache/
 .coverage
