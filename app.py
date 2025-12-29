@@ -252,7 +252,7 @@ class Comment(db.Model):
     issue_id = db.Column(db.Integer, db.ForeignKey('issues.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Note: updated_at column doesn't exist in database, so we'll use created_at for both
     
     # Relationships
     user = db.relationship('User', backref='comments')
@@ -266,7 +266,7 @@ class Comment(db.Model):
             'user_name': self.user.name if self.user else None,
             'user_photo': self.user.photo_url if self.user else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            'updated_at': self.created_at.isoformat() if self.created_at else None  # Use created_at for both
         }
 
 # ================================
@@ -1533,7 +1533,7 @@ def update_comment(current_user, comment_id):
             return jsonify({'error': 'Comment content cannot be empty'}), 400
         
         comment.text = content  # Changed from 'content' to 'text'
-        comment.updated_at = datetime.utcnow()
+        # Note: Not setting updated_at since column doesn't exist in database
         
         db.session.commit()
         
