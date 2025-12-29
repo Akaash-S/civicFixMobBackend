@@ -420,29 +420,38 @@ def require_auth(f):
         
         # Step 3: Extract token (handle edge cases)
         try:
-            token_parts = auth_header.split(' ', 1)
-            if len(token_parts) != 2:
-                logger.warning(f"Invalid Authorization header structure from {request.remote_addr}")
+            # Handle multiple spaces and trailing spaces
+            auth_parts = auth_header.strip().split()
+            if len(auth_parts) != 2 or auth_parts[0] != 'Bearer':
+                logger.warning(f"Invalid Authorization header structure from {request.remote_addr}: {auth_header[:50]}")
                 return jsonify({
                     'error': 'Invalid Authorization header format',
                     'message': 'Authorization header must be: Bearer <token>'
                 }), 401
             
-            token = token_parts[1].strip()
-        except (IndexError, AttributeError):
-            logger.warning(f"Failed to extract token from Authorization header from {request.remote_addr}")
+            token = auth_parts[1].strip()
+        except (IndexError, AttributeError) as e:
+            logger.warning(f"Failed to extract token from Authorization header from {request.remote_addr}: {e}")
             return jsonify({
                 'error': 'Invalid Authorization header format',
                 'message': 'Unable to extract token from Authorization header'
             }), 401
         
-        # Step 4: Validate token is not empty
+        # Step 4: Validate token is not empty and reasonable length
         if not token or token == '':
             logger.warning(f"Empty token in Authorization header from {request.remote_addr}")
             return jsonify({
                 'error': 'Empty token',
                 'message': 'JWT token cannot be empty'
             }), 401
+        
+        # Validate token length (prevent extremely long tokens that could cause issues)
+        if len(token) > 8192:  # 8KB limit for JWT tokens
+            logger.warning(f"Token too long from {request.remote_addr}: {len(token)} characters")
+            return jsonify({
+                'error': 'Token too long',
+                'message': 'JWT token exceeds maximum allowed length'
+            }), 400
         
         # Step 5: Basic token format validation (fix "Not enough segments")
         if token in ['invalid-token', 'invalid-token-123', 'header.payload']:
@@ -507,34 +516,75 @@ def require_auth(f):
 def sync_user_to_database(user_data):
     """
     Sync Supabase user data to local database
-    Creates or updates user record
+    Creates or updates user record with enhanced error handling
     """
     try:
         # Look up user by Supabase UID
         user = User.query.filter_by(firebase_uid=user_data['uid']).first()
         
         if not user:
-            # Create new user
+            # Create new user with validation
+            email = user_data.get('email', '')
+            name = user_data.get('name', 'User')
+            
+            # Ensure email is not empty for database constraints
+            if not email:
+                email = f"user_{user_data['uid']}@example.com"
+            
+            # Ensure name is not empty
+            if not name or name.strip() == '':
+                name = email.split('@')[0] if '@' in email else f"User_{user_data['uid'][:8]}"
+            
             user = User(
                 firebase_uid=user_data['uid'],  # Using firebase_uid field for Supabase UID
-                email=user_data.get('email', ''),
-                name=user_data.get('name', 'User'),
+                email=email,
+                name=name,
                 phone='',  # Will be updated by user later
                 photo_url=user_data.get('user_metadata', {}).get('avatar_url', '')
             )
-            db.session.add(user)
-            db.session.commit()
-            logger.info(f"Created new user: {user.email} (Supabase UID: {user_data['uid']})")
+            
+            try:
+                db.session.add(user)
+                db.session.commit()
+                logger.info(f"Created new user: {user.email} (Supabase UID: {user_data['uid']})")
+            except Exception as db_error:
+                db.session.rollback()
+                logger.error(f"Database error creating user: {db_error}")
+                
+                # Try to find if user was created by another request
+                user = User.query.filter_by(firebase_uid=user_data['uid']).first()
+                if not user:
+                    # If still not found, create with more basic data
+                    try:
+                        user = User(
+                            firebase_uid=user_data['uid'],
+                            email=f"user_{user_data['uid'][:8]}@temp.com",
+                            name=f"User_{user_data['uid'][:8]}",
+                            phone='',
+                            photo_url=''
+                        )
+                        db.session.add(user)
+                        db.session.commit()
+                        logger.info(f"Created fallback user: {user.email}")
+                    except Exception as fallback_error:
+                        db.session.rollback()
+                        logger.error(f"Fallback user creation failed: {fallback_error}")
+                        return None
         else:
             # Update existing user info if needed
             updated = False
             
-            if user.email != user_data.get('email', '') and user_data.get('email'):
-                user.email = user_data['email']
-                updated = True
+            new_email = user_data.get('email', '')
+            if new_email and user.email != new_email:
+                try:
+                    user.email = new_email
+                    updated = True
+                except Exception:
+                    logger.warning(f"Could not update email for user {user.id}")
                 
-            if user.name != user_data.get('name', '') and user_data.get('name'):
-                user.name = user_data['name']
+            new_name = user_data.get('name', '')
+            if new_name and user.name != new_name:
+                user.name = new_name
                 updated = True
                 
             # Update photo URL from user metadata
@@ -544,9 +594,13 @@ def sync_user_to_database(user_data):
                 updated = True
             
             if updated:
-                user.updated_at = datetime.utcnow()
-                db.session.commit()
-                logger.info(f"Updated user info: {user.email}")
+                try:
+                    user.updated_at = datetime.utcnow()
+                    db.session.commit()
+                    logger.info(f"Updated user info: {user.email}")
+                except Exception as update_error:
+                    db.session.rollback()
+                    logger.warning(f"Could not update user {user.id}: {update_error}")
         
         return user
         
