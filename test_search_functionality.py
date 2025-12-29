@@ -15,12 +15,24 @@ def test_search_functionality():
     print("🔍 Testing Search Functionality")
     print("=" * 50)
     
-    # Test 1: Basic search
-    print("\n1. Testing basic search...")
-    response = requests.get(f"{API_BASE}/issues?search=road")
+    # First, get some issues to see what data we have
+    print("\n0. Getting sample issues to understand data...")
+    response = requests.get(f"{API_BASE}/issues?per_page=3")
     if response.status_code == 200:
         data = response.json()
-        print(f"✅ Search for 'road' returned {len(data['issues'])} issues")
+        print(f"✅ Found {len(data['issues'])} sample issues:")
+        for issue in data['issues']:
+            print(f"   - Title: {issue['title']}")
+            print(f"     Description: {issue['description'][:50]}...")
+            print(f"     Category: {issue['category']}")
+            print()
+    
+    # Test 1: Basic search
+    print("\n1. Testing basic search...")
+    response = requests.get(f"{API_BASE}/issues?search=test")
+    if response.status_code == 200:
+        data = response.json()
+        print(f"✅ Search for 'test' returned {len(data['issues'])} issues")
         for issue in data['issues'][:3]:  # Show first 3
             print(f"   - {issue['title']}")
     else:
@@ -28,16 +40,16 @@ def test_search_functionality():
     
     # Test 2: Category filter
     print("\n2. Testing category filter...")
-    response = requests.get(f"{API_BASE}/issues?category=Infrastructure")
+    response = requests.get(f"{API_BASE}/issues?category=Pothole")
     if response.status_code == 200:
         data = response.json()
-        print(f"✅ Category filter 'Infrastructure' returned {len(data['issues'])} issues")
+        print(f"✅ Category filter 'Pothole' returned {len(data['issues'])} issues")
     else:
         print(f"❌ Category filter failed: {response.status_code}")
     
     # Test 3: Combined search and category
     print("\n3. Testing combined search and category...")
-    response = requests.get(f"{API_BASE}/issues?search=broken&category=Infrastructure")
+    response = requests.get(f"{API_BASE}/issues?search=test&category=Pothole")
     if response.status_code == 200:
         data = response.json()
         print(f"✅ Combined search returned {len(data['issues'])} issues")
@@ -55,7 +67,7 @@ def test_search_functionality():
     
     # Test 5: Case insensitive search
     print("\n5. Testing case insensitive search...")
-    response = requests.get(f"{API_BASE}/issues?search=ROAD")
+    response = requests.get(f"{API_BASE}/issues?search=TEST")
     if response.status_code == 200:
         data = response.json()
         print(f"✅ Case insensitive search returned {len(data['issues'])} issues")

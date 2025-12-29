@@ -799,7 +799,7 @@ def health():
 @app.route('/api/v1/upload', methods=['POST'])
 @require_auth
 def upload_file(current_user):
-    """Upload file to S3"""
+    """Upload file (image or video) to S3"""
     try:
         if not s3_service:
             return jsonify({'error': 'File upload service not available'}), 503
@@ -811,37 +811,55 @@ def upload_file(current_user):
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
         
-        # Validate file type
-        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+        # Validate file type - support both images and videos
+        allowed_extensions = {
+            # Images
+            'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff',
+            # Videos
+            'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'
+        }
         file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
         
         if file_extension not in allowed_extensions:
-            return jsonify({'error': 'Invalid file type. Allowed: png, jpg, jpeg, gif, webp'}), 400
+            return jsonify({
+                'error': 'Invalid file type. Allowed: ' + ', '.join(sorted(allowed_extensions))
+            }), 400
         
-        # Validate file size (max 5MB)
+        # Validate file size - different limits for images and videos
         file.seek(0, 2)  # Seek to end
         file_size = file.tell()
         file.seek(0)  # Reset to beginning
         
-        if file_size > 5 * 1024 * 1024:  # 5MB
-            return jsonify({'error': 'File too large. Maximum size: 5MB'}), 400
+        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'}
+        max_size = 50 * 1024 * 1024 if file_extension in video_extensions else 10 * 1024 * 1024  # 50MB for videos, 10MB for images
+        
+        if file_size > max_size:
+            size_limit = "50MB" if file_extension in video_extensions else "10MB"
+            return jsonify({'error': f'File too large. Maximum size for {file_extension}: {size_limit}'}), 400
         
         # Upload to S3
         file_data = file.read()
-        content_type = file.content_type or 'image/jpeg'
+        
+        # Set appropriate content type
+        if file_extension in video_extensions:
+            content_type = f'video/{file_extension}' if file_extension != '3gp' else 'video/3gpp'
+        else:
+            content_type = file.content_type or f'image/{file_extension}'
         
         file_url, error = s3_service.upload_file(file_data, file.filename, content_type)
         
         if error:
             return jsonify({'error': f'Upload failed: {error}'}), 500
         
-        logger.info(f"File uploaded by user {current_user.email}: {file_url}")
+        logger.info(f"File uploaded by user {current_user.email}: {file_url} ({file_size} bytes)")
         
         return jsonify({
             'message': 'File uploaded successfully',
             'file_url': file_url,
             'file_name': file.filename,
-            'file_size': file_size
+            'file_size': file_size,
+            'file_type': 'video' if file_extension in video_extensions else 'image',
+            'content_type': content_type
         }), 201
         
     except Exception as e:
@@ -851,7 +869,7 @@ def upload_file(current_user):
 @app.route('/api/v1/upload/multiple', methods=['POST'])
 @require_auth
 def upload_multiple_files(current_user):
-    """Upload multiple files to S3"""
+    """Upload multiple files (images and videos) to S3"""
     try:
         if not s3_service:
             return jsonify({'error': 'File upload service not available'}), 503
@@ -864,11 +882,20 @@ def upload_multiple_files(current_user):
             return jsonify({'error': 'No files selected'}), 400
         
         # Limit number of files
-        if len(files) > 5:
-            return jsonify({'error': 'Maximum 5 files allowed'}), 400
+        if len(files) > 10:
+            return jsonify({'error': 'Maximum 10 files allowed'}), 400
         
         uploaded_files = []
         errors = []
+        
+        # Allowed file extensions
+        allowed_extensions = {
+            # Images
+            'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff',
+            # Videos
+            'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'
+        }
+        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'}
         
         for file in files:
             if file.filename == '':
@@ -876,7 +903,6 @@ def upload_multiple_files(current_user):
             
             try:
                 # Validate file type
-                allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
                 file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
                 
                 if file_extension not in allowed_extensions:
@@ -888,13 +914,21 @@ def upload_multiple_files(current_user):
                 file_size = file.tell()
                 file.seek(0)
                 
-                if file_size > 5 * 1024 * 1024:  # 5MB
-                    errors.append(f"{file.filename}: File too large")
+                max_size = 50 * 1024 * 1024 if file_extension in video_extensions else 10 * 1024 * 1024  # 50MB for videos, 10MB for images
+                
+                if file_size > max_size:
+                    size_limit = "50MB" if file_extension in video_extensions else "10MB"
+                    errors.append(f"{file.filename}: File too large (max {size_limit})")
                     continue
                 
                 # Upload to S3
                 file_data = file.read()
-                content_type = file.content_type or 'image/jpeg'
+                
+                # Set appropriate content type
+                if file_extension in video_extensions:
+                    content_type = f'video/{file_extension}' if file_extension != '3gp' else 'video/3gpp'
+                else:
+                    content_type = file.content_type or f'image/{file_extension}'
                 
                 file_url, error = s3_service.upload_file(file_data, file.filename, content_type)
                 
@@ -904,13 +938,15 @@ def upload_multiple_files(current_user):
                     uploaded_files.append({
                         'file_url': file_url,
                         'file_name': file.filename,
-                        'file_size': file_size
+                        'file_size': file_size,
+                        'file_type': 'video' if file_extension in video_extensions else 'image',
+                        'content_type': content_type
                     })
                 
             except Exception as e:
                 errors.append(f"{file.filename}: {str(e)}")
         
-        logger.info(f"Multiple files uploaded by user {current_user.email}: {len(uploaded_files)} successful")
+        logger.info(f"Multiple files uploaded by user {current_user.email}: {len(uploaded_files)} successful, {len(errors)} failed")
         
         return jsonify({
             'message': f'{len(uploaded_files)} files uploaded successfully',
@@ -921,6 +957,127 @@ def upload_multiple_files(current_user):
     except Exception as e:
         logger.error(f"Error uploading multiple files: {e}")
         return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/upload-media', methods=['POST'])
+@require_auth
+def upload_issue_media(current_user):
+    """Upload media files for issue creation/update"""
+    try:
+        if not s3_service:
+            return jsonify({'error': 'File upload service not available'}), 503
+            
+        if 'files' not in request.files:
+            return jsonify({'error': 'No files provided'}), 400
+        
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No files selected'}), 400
+        
+        # Limit number of files for issues
+        if len(files) > 8:
+            return jsonify({'error': 'Maximum 8 media files allowed per issue'}), 400
+        
+        uploaded_files = []
+        errors = []
+        total_size = 0
+        
+        # Allowed file extensions for issues
+        allowed_extensions = {
+            # Images
+            'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp',
+            # Videos
+            'mp4', 'mov', 'avi', 'mkv', 'webm'
+        }
+        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'webm'}
+        
+        for file in files:
+            if file.filename == '':
+                continue
+            
+            try:
+                # Validate file type
+                file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+                
+                if file_extension not in allowed_extensions:
+                    errors.append(f"{file.filename}: Invalid file type. Allowed: {', '.join(sorted(allowed_extensions))}")
+                    continue
+                
+                # Validate file size
+                file.seek(0, 2)
+                file_size = file.tell()
+                file.seek(0)
+                
+                # Different size limits for different file types
+                if file_extension in video_extensions:
+                    max_size = 100 * 1024 * 1024  # 100MB for videos
+                    size_limit = "100MB"
+                else:
+                    max_size = 15 * 1024 * 1024  # 15MB for images
+                    size_limit = "15MB"
+                
+                if file_size > max_size:
+                    errors.append(f"{file.filename}: File too large (max {size_limit} for {file_extension})")
+                    continue
+                
+                total_size += file_size
+                
+                # Check total upload size (max 200MB per issue)
+                if total_size > 200 * 1024 * 1024:
+                    errors.append(f"{file.filename}: Total upload size exceeds 200MB limit")
+                    continue
+                
+                # Upload to S3 with issue-specific path
+                file_data = file.read()
+                
+                # Set appropriate content type
+                if file_extension in video_extensions:
+                    content_type = f'video/{file_extension}'
+                else:
+                    content_type = file.content_type or f'image/{file_extension}'
+                
+                # Use issue-specific S3 path
+                file_url, error = s3_service.upload_file(file_data, f"issue_media_{file.filename}", content_type)
+                
+                if error:
+                    errors.append(f"{file.filename}: Upload failed - {error}")
+                else:
+                    uploaded_files.append({
+                        'file_url': file_url,
+                        'file_name': file.filename,
+                        'file_size': file_size,
+                        'file_type': 'video' if file_extension in video_extensions else 'image',
+                        'content_type': content_type,
+                        'file_extension': file_extension
+                    })
+                
+            except Exception as e:
+                errors.append(f"{file.filename}: {str(e)}")
+        
+        logger.info(f"Issue media uploaded by user {current_user.email}: {len(uploaded_files)} successful, {len(errors)} failed, total size: {total_size} bytes")
+        
+        # Return URLs array for easy integration with issue creation
+        media_urls = [file['file_url'] for file in uploaded_files]
+        
+        return jsonify({
+            'message': f'{len(uploaded_files)} media files uploaded successfully',
+            'media_urls': media_urls,
+            'uploaded_files': uploaded_files,
+            'errors': errors,
+            'total_size': total_size,
+            'summary': {
+                'images': len([f for f in uploaded_files if f['file_type'] == 'image']),
+                'videos': len([f for f in uploaded_files if f['file_type'] == 'video']),
+                'total_files': len(uploaded_files)
+            }
+        }), 201 if uploaded_files else 400
+        
+    except Exception as e:
+        logger.error(f"Error uploading issue media: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# Issue Routes
+# ================================
 
 # ================================
 # Issue Routes
