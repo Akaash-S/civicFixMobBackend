@@ -200,6 +200,9 @@ class Issue(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    # Relationships
+    comments = db.relationship('Comment', backref='issue', lazy=True, cascade='all, delete-orphan')
+    
     def get_image_urls(self):
         """Get image URLs as list"""
         # Try new field first
@@ -237,6 +240,31 @@ class Issue(db.Model):
             'image_urls': self.get_image_urls(),
             'created_by': self.created_by,
             'creator_name': self.creator.name if self.creator else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+class Comment(db.Model):
+    __tablename__ = 'comments'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+    issue_id = db.Column(db.Integer, db.ForeignKey('issues.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = db.relationship('User', backref='comments')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'content': self.content,
+            'issue_id': self.issue_id,
+            'user_id': self.user_id,
+            'user_name': self.user.name if self.user else None,
+            'user_photo': self.user.photo_url if self.user else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -1370,6 +1398,154 @@ def get_status_options():
         {'value': 'REJECTED', 'label': 'Rejected', 'description': 'Issue was rejected or invalid'}
     ]
     return jsonify({'statuses': statuses})
+
+# ================================
+# Comment Routes
+# ================================
+
+@app.route('/api/v1/issues/<int:issue_id>/comments', methods=['GET'])
+def get_issue_comments(issue_id):
+    """Get all comments for a specific issue"""
+    try:
+        # Check if issue exists
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Query parameters
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 20, type=int), 100)
+        
+        # Get comments for the issue
+        query = Comment.query.filter_by(issue_id=issue_id).order_by(Comment.created_at.asc())
+        
+        # Paginate
+        pagination = query.paginate(
+            page=page,
+            per_page=per_page,
+            error_out=False
+        )
+        
+        comments = [comment.to_dict() for comment in pagination.items]
+        
+        return jsonify({
+            'comments': comments,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': pagination.total,
+                'pages': pagination.pages,
+                'has_next': pagination.has_next,
+                'has_prev': pagination.has_prev
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting comments for issue {issue_id}: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>/comments', methods=['POST'])
+@require_auth
+def create_comment(current_user, issue_id):
+    """Create a new comment on an issue"""
+    try:
+        # Check if issue exists
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        data = request.get_json()
+        if not data or not data.get('content'):
+            return jsonify({'error': 'Comment content is required'}), 400
+        
+        content = data['content'].strip()
+        if not content:
+            return jsonify({'error': 'Comment content cannot be empty'}), 400
+        
+        # Create comment
+        comment = Comment(
+            content=content,
+            issue_id=issue_id,
+            user_id=current_user.id
+        )
+        
+        db.session.add(comment)
+        db.session.commit()
+        
+        logger.info(f"Comment created on issue {issue_id} by user {current_user.email}")
+        
+        return jsonify({
+            'message': 'Comment created successfully',
+            'comment': comment.to_dict()
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error creating comment: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/comments/<int:comment_id>', methods=['PUT'])
+@require_auth
+def update_comment(current_user, comment_id):
+    """Update a comment (only by the comment author)"""
+    try:
+        comment = Comment.query.get(comment_id)
+        if not comment:
+            return jsonify({'error': 'Comment not found'}), 404
+        
+        # Check if user is the comment author
+        if comment.user_id != current_user.id:
+            return jsonify({'error': 'Permission denied'}), 403
+        
+        data = request.get_json()
+        if not data or not data.get('content'):
+            return jsonify({'error': 'Comment content is required'}), 400
+        
+        content = data['content'].strip()
+        if not content:
+            return jsonify({'error': 'Comment content cannot be empty'}), 400
+        
+        comment.content = content
+        comment.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        logger.info(f"Comment {comment_id} updated by user {current_user.email}")
+        
+        return jsonify({
+            'message': 'Comment updated successfully',
+            'comment': comment.to_dict()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating comment: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/comments/<int:comment_id>', methods=['DELETE'])
+@require_auth
+def delete_comment(current_user, comment_id):
+    """Delete a comment (only by the comment author)"""
+    try:
+        comment = Comment.query.get(comment_id)
+        if not comment:
+            return jsonify({'error': 'Comment not found'}), 404
+        
+        # Check if user is the comment author
+        if comment.user_id != current_user.id:
+            return jsonify({'error': 'Permission denied'}), 403
+        
+        db.session.delete(comment)
+        db.session.commit()
+        
+        logger.info(f"Comment {comment_id} deleted by user {current_user.email}")
+        
+        return jsonify({'message': 'Comment deleted successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error deleting comment: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/v1/priority-options', methods=['GET'])
 def get_priority_options():
