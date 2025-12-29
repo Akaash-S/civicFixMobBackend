@@ -1,4 +1,4 @@
-# CivicFix Backend - Supabase Authentication + AWS Infrastructure Dockerfile
+# CivicFix Backend - Perfect Authentication System Dockerfile
 FROM python:3.11-slim
 
 # Set environment variables
@@ -27,6 +27,10 @@ COPY app.py .
 COPY validate_aws_setup.py .
 COPY migrate_database.py .
 
+# Copy test files for validation (optional)
+COPY test_auth_quick.py .
+COPY test_user_sync.py .
+
 # Copy environment files (optional - can be overridden by docker-compose)
 COPY .env* ./
 
@@ -37,13 +41,14 @@ USER appuser
 # Expose port
 EXPOSE $PORT
 
-# Health check with longer timeout for AWS services
+# Enhanced health check with authentication validation
 HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=5 \
-    CMD curl -f http://localhost:$PORT/health || exit 1
+    CMD curl -f http://localhost:$PORT/health && \
+        curl -f http://localhost:$PORT/health | grep -q '"authentication":"supabase"' || exit 1
 
-# Startup script that validates AWS setup before starting the app
+# Startup script that validates complete setup before starting the app
 COPY --chown=appuser:appuser startup.sh .
 RUN chmod +x startup.sh
 
-# Run the application with validation
+# Run the application with comprehensive validation
 CMD ["./startup.sh"]

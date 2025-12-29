@@ -1,10 +1,10 @@
 # CivicFix Backend - Simple Docker Compose (Backend Only)
-# Supabase Authentication + AWS Infrastructure
+# Perfect Authentication System + AWS Infrastructure
 # For testing without nginx reverse proxy
 version: '3.8'
 
 services:
-  # CivicFix Backend
+  # CivicFix Backend with Perfect Authentication
   backend:
     build:
       context: .
@@ -33,6 +33,7 @@ services:
       # Optional Configuration
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       - SKIP_VALIDATION=${SKIP_VALIDATION:-false}
+      - SKIP_AUTH_TEST=${SKIP_AUTH_TEST:-false}
       - RUN_MIGRATION=${RUN_MIGRATION:-false}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]

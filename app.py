@@ -418,18 +418,29 @@ def require_auth(f):
                 'message': 'Authorization header must be: Bearer <token>'
             }), 401
         
-        # Step 3: Extract token (handle edge cases)
+        # Step 3: Extract token (handle edge cases with strict validation)
         try:
-            # Handle multiple spaces and trailing spaces
-            auth_parts = auth_header.strip().split()
-            if len(auth_parts) != 2 or auth_parts[0] != 'Bearer':
-                logger.warning(f"Invalid Authorization header structure from {request.remote_addr}: {auth_header[:50]}")
+            # Check for exact "Bearer " prefix (case sensitive, single space)
+            if not auth_header.startswith('Bearer '):
+                logger.warning(f"Invalid Authorization header format from {request.remote_addr}: {auth_header[:50]}")
                 return jsonify({
                     'error': 'Invalid Authorization header format',
                     'message': 'Authorization header must be: Bearer <token>'
                 }), 401
             
-            token = auth_parts[1].strip()
+            # Extract token part after "Bearer "
+            token_part = auth_header[7:]  # Remove "Bearer " (7 characters)
+            
+            # Check for multiple spaces or trailing spaces (should be rejected)
+            if '  ' in auth_header or auth_header.endswith(' '):
+                logger.warning(f"Invalid Authorization header with extra spaces from {request.remote_addr}")
+                return jsonify({
+                    'error': 'Invalid Authorization header format',
+                    'message': 'Authorization header must be: Bearer <token> (single space, no trailing spaces)'
+                }), 401
+            
+            token = token_part.strip()
+            
         except (IndexError, AttributeError) as e:
             logger.warning(f"Failed to extract token from Authorization header from {request.remote_addr}: {e}")
             return jsonify({
@@ -480,14 +491,15 @@ def require_auth(f):
                 'message': 'Please refresh your session and try again'
             }), 401
         
-        # Step 7: Sync user to database
+        # Step 7: Sync user to database with detailed error handling
         try:
             user = sync_user_to_database(user_data)
             if not user:
                 logger.error(f"Failed to sync user to database: {user_data.get('email', 'unknown')}")
+                logger.error(f"User data received: {user_data}")
                 return jsonify({
                     'error': 'User synchronization failed',
-                    'message': 'Unable to process user data'
+                    'message': 'Unable to process user data. Please try again.'
                 }), 500
             
             # Step 8: Apply role-based access control
@@ -504,11 +516,15 @@ def require_auth(f):
             return f(user, *args, **kwargs)
             
         except Exception as e:
-            logger.error(f"Database error during authentication: {e}")
-            db.session.rollback()
+            logger.error(f"Database error during authentication: {e}", exc_info=True)
+            logger.error(f"User data that caused error: {user_data}")
+            try:
+                db.session.rollback()
+            except:
+                pass  # Ignore rollback errors
             return jsonify({
                 'error': 'Authentication database error',
-                'message': 'Unable to process authentication'
+                'message': 'Unable to process authentication. Please try again.'
             }), 500
     
     return decorated_function
@@ -516,83 +532,137 @@ def require_auth(f):
 def sync_user_to_database(user_data):
     """
     Sync Supabase user data to local database
-    Creates or updates user record with enhanced error handling
+    Creates or updates user record with bulletproof error handling
+    Handles all database constraints and edge cases
     """
     try:
+        # Validate input data
+        if not user_data or not isinstance(user_data, dict):
+            logger.error("Invalid user_data provided to sync_user_to_database")
+            return None
+        
+        uid = user_data.get('uid')
+        if not uid:
+            logger.error("No UID provided in user_data")
+            return None
+        
         # Look up user by Supabase UID
-        user = User.query.filter_by(firebase_uid=user_data['uid']).first()
+        user = User.query.filter_by(firebase_uid=uid).first()
         
         if not user:
-            # Create new user with validation
-            email = user_data.get('email', '')
-            name = user_data.get('name', 'User')
+            # Create new user with bulletproof validation
+            email = user_data.get('email', '').strip()
+            name = user_data.get('name', '').strip()
             
-            # Ensure email is not empty for database constraints
+            # Handle email constraint (unique=True, nullable=False)
             if not email:
-                email = f"user_{user_data['uid']}@example.com"
+                # Generate unique email based on UID
+                email = f"user_{uid.replace('-', '')[:16]}@civicfix.temp"
             
-            # Ensure name is not empty
-            if not name or name.strip() == '':
-                name = email.split('@')[0] if '@' in email else f"User_{user_data['uid'][:8]}"
+            # Check if email already exists (handle unique constraint)
+            existing_email_user = User.query.filter_by(email=email).first()
+            if existing_email_user:
+                # Generate unique email with timestamp
+                import time
+                timestamp = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
+                email = f"user_{uid.replace('-', '')[:10]}_{timestamp}@civicfix.temp"
             
-            user = User(
-                firebase_uid=user_data['uid'],  # Using firebase_uid field for Supabase UID
-                email=email,
-                name=name,
-                phone='',  # Will be updated by user later
-                photo_url=user_data.get('user_metadata', {}).get('avatar_url', '')
-            )
+            # Handle name constraint (nullable=False)
+            if not name:
+                name = f"User_{uid.replace('-', '')[:8]}"
             
+            # Ensure name is not too long (max 255 chars)
+            if len(name) > 255:
+                name = name[:255]
+            
+            # Ensure email is not too long (max 255 chars)
+            if len(email) > 255:
+                email = f"user_{uid[:8]}@temp.com"
+            
+            # Create user with validated data
             try:
+                user = User(
+                    firebase_uid=uid,
+                    email=email,
+                    name=name,
+                    phone='',
+                    photo_url=user_data.get('user_metadata', {}).get('avatar_url', '') or ''
+                )
+                
                 db.session.add(user)
                 db.session.commit()
-                logger.info(f"Created new user: {user.email} (Supabase UID: {user_data['uid']})")
+                logger.info(f"Created new user: {user.email} (Supabase UID: {uid})")
+                
             except Exception as db_error:
                 db.session.rollback()
                 logger.error(f"Database error creating user: {db_error}")
                 
-                # Try to find if user was created by another request
-                user = User.query.filter_by(firebase_uid=user_data['uid']).first()
-                if not user:
-                    # If still not found, create with more basic data
-                    try:
-                        user = User(
-                            firebase_uid=user_data['uid'],
-                            email=f"user_{user_data['uid'][:8]}@temp.com",
-                            name=f"User_{user_data['uid'][:8]}",
-                            phone='',
-                            photo_url=''
-                        )
-                        db.session.add(user)
-                        db.session.commit()
-                        logger.info(f"Created fallback user: {user.email}")
-                    except Exception as fallback_error:
-                        db.session.rollback()
-                        logger.error(f"Fallback user creation failed: {fallback_error}")
-                        return None
+                # Check if user was created by concurrent request
+                user = User.query.filter_by(firebase_uid=uid).first()
+                if user:
+                    logger.info(f"User found after rollback (concurrent creation): {user.email}")
+                    return user
+                
+                # Final fallback - create with minimal guaranteed unique data
+                try:
+                    import uuid
+                    unique_suffix = str(uuid.uuid4())[:8]
+                    fallback_email = f"fallback_{unique_suffix}@civicfix.temp"
+                    fallback_name = f"User_{unique_suffix}"
+                    
+                    user = User(
+                        firebase_uid=uid,
+                        email=fallback_email,
+                        name=fallback_name,
+                        phone='',
+                        photo_url=''
+                    )
+                    
+                    db.session.add(user)
+                    db.session.commit()
+                    logger.info(f"Created fallback user: {user.email}")
+                    
+                except Exception as final_error:
+                    db.session.rollback()
+                    logger.error(f"Final fallback user creation failed: {final_error}")
+                    return None
         else:
             # Update existing user info if needed
             updated = False
             
-            new_email = user_data.get('email', '')
-            if new_email and user.email != new_email:
-                try:
-                    user.email = new_email
-                    updated = True
-                except Exception:
-                    logger.warning(f"Could not update email for user {user.id}")
-                
-            new_name = user_data.get('name', '')
-            if new_name and user.name != new_name:
+            # Update email if provided and different
+            new_email = user_data.get('email', '').strip()
+            if new_email and new_email != user.email:
+                # Check if new email is already taken by another user
+                existing_user = User.query.filter_by(email=new_email).filter(User.id != user.id).first()
+                if not existing_user:
+                    try:
+                        user.email = new_email
+                        updated = True
+                    except Exception as email_error:
+                        logger.warning(f"Could not update email for user {user.id}: {email_error}")
+                else:
+                    logger.warning(f"Email {new_email} already taken by another user")
+            
+            # Update name if provided and different
+            new_name = user_data.get('name', '').strip()
+            if new_name and new_name != user.name:
+                # Ensure name is not too long
+                if len(new_name) > 255:
+                    new_name = new_name[:255]
                 user.name = new_name
                 updated = True
-                
+            
             # Update photo URL from user metadata
-            new_photo_url = user_data.get('user_metadata', {}).get('avatar_url', '')
-            if new_photo_url and user.photo_url != new_photo_url:
+            new_photo_url = user_data.get('user_metadata', {}).get('avatar_url', '') or ''
+            if new_photo_url and new_photo_url != user.photo_url:
+                # Ensure photo URL is not too long
+                if len(new_photo_url) > 500:
+                    new_photo_url = new_photo_url[:500]
                 user.photo_url = new_photo_url
                 updated = True
             
+            # Commit updates if any
             if updated:
                 try:
                     user.updated_at = datetime.utcnow()
@@ -605,8 +675,11 @@ def sync_user_to_database(user_data):
         return user
         
     except Exception as e:
-        logger.error(f"Failed to sync user to database: {e}")
-        db.session.rollback()
+        logger.error(f"Failed to sync user to database: {e}", exc_info=True)
+        try:
+            db.session.rollback()
+        except:
+            pass  # Ignore rollback errors
         return None
 
 def check_user_permissions(user, endpoint):
