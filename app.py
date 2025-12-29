@@ -979,6 +979,10 @@ def upload_issue_media(current_user):
         files = request.files.getlist('files')
         logger.info(f"📤 Received {len(files)} files")
         
+        for i, file in enumerate(files):
+            logger.info(f"📤 File {i+1}: name='{file.filename}', content_type='{file.content_type}', size={len(file.read())} bytes")
+            file.seek(0)  # Reset file pointer after reading for size
+        
         if not files or all(f.filename == '' for f in files):
             logger.warning("📤 No files selected or all files have empty names")
             return jsonify({'error': 'No files selected'}), 400
