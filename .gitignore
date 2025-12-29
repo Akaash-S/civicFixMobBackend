@@ -76,7 +76,7 @@ media/
 *.sqlite3
 
 # Development files (not needed in EC2 production)
-test_*.py
+#test_*.py
 *_test.py
 quick_start*.py
 setup_windows.*
