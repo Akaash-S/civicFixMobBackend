@@ -247,12 +247,12 @@ class Issue(db.Model):
 class Comment(db.Model):
     __tablename__ = 'comments'
     
-    id = db.Column(db.Integer, primary_key=True)
-    text = db.Column(db.Text, nullable=False)  # Changed from 'content' to 'text' to match database
-    issue_id = db.Column(db.Integer, db.ForeignKey('issues.id'), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    id = db.Column(db.String(36), primary_key=True)  # VARCHAR(36) in database
+    text = db.Column(db.Text, nullable=False)
+    issue_id = db.Column(db.String(36), db.ForeignKey('issues.id'), nullable=False)  # VARCHAR(36)
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)  # VARCHAR(36)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    # Note: updated_at column doesn't exist in database, so we'll use created_at for both
+    # Note: updated_at column doesn't exist in database
     
     # Relationships
     user = db.relationship('User', backref='comments')
@@ -1435,7 +1435,7 @@ def get_issue_comments(issue_id):
     """Get all comments for a specific issue"""
     try:
         # Check if issue exists
-        issue = Issue.query.get(issue_id)
+        issue = Issue.query.get(str(issue_id))  # Convert to string for UUID lookup
         if not issue:
             return jsonify({'error': 'Issue not found'}), 404
         
@@ -1443,8 +1443,8 @@ def get_issue_comments(issue_id):
         page = request.args.get('page', 1, type=int)
         per_page = min(request.args.get('per_page', 20, type=int), 100)
         
-        # Get comments for the issue
-        query = Comment.query.filter_by(issue_id=issue_id).order_by(Comment.created_at.asc())
+        # Get comments for the issue (convert issue_id to string)
+        query = Comment.query.filter_by(issue_id=str(issue_id)).order_by(Comment.created_at.asc())
         
         # Paginate
         pagination = query.paginate(
@@ -1477,7 +1477,7 @@ def create_comment(current_user, issue_id):
     """Create a new comment on an issue"""
     try:
         # Check if issue exists
-        issue = Issue.query.get(issue_id)
+        issue = Issue.query.get(str(issue_id))  # Convert to string for UUID lookup
         if not issue:
             return jsonify({'error': 'Issue not found'}), 404
         
@@ -1489,11 +1489,13 @@ def create_comment(current_user, issue_id):
         if not content:
             return jsonify({'error': 'Comment content cannot be empty'}), 400
         
-        # Create comment (using 'text' field to match database schema)
+        # Create comment with UUID
+        import uuid
         comment = Comment(
-            text=content,  # Changed from 'content' to 'text'
-            issue_id=issue_id,
-            user_id=current_user.id
+            id=str(uuid.uuid4()),  # Generate UUID for comment ID
+            text=content,
+            issue_id=str(issue_id),  # Convert to string
+            user_id=str(current_user.id)  # Convert to string
         )
         
         db.session.add(comment)
@@ -1511,17 +1513,17 @@ def create_comment(current_user, issue_id):
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/api/v1/comments/<int:comment_id>', methods=['PUT'])
+@app.route('/api/v1/comments/<comment_id>', methods=['PUT'])
 @require_auth
 def update_comment(current_user, comment_id):
     """Update a comment (only by the comment author)"""
     try:
-        comment = Comment.query.get(comment_id)
+        comment = Comment.query.get(comment_id)  # comment_id is already a string
         if not comment:
             return jsonify({'error': 'Comment not found'}), 404
         
-        # Check if user is the comment author
-        if comment.user_id != current_user.id:
+        # Check if user is the comment author (convert user IDs to string for comparison)
+        if comment.user_id != str(current_user.id):
             return jsonify({'error': 'Permission denied'}), 403
         
         data = request.get_json()
@@ -1532,7 +1534,7 @@ def update_comment(current_user, comment_id):
         if not content:
             return jsonify({'error': 'Comment content cannot be empty'}), 400
         
-        comment.text = content  # Changed from 'content' to 'text'
+        comment.text = content
         # Note: Not setting updated_at since column doesn't exist in database
         
         db.session.commit()
@@ -1549,17 +1551,17 @@ def update_comment(current_user, comment_id):
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/api/v1/comments/<int:comment_id>', methods=['DELETE'])
+@app.route('/api/v1/comments/<comment_id>', methods=['DELETE'])
 @require_auth
 def delete_comment(current_user, comment_id):
     """Delete a comment (only by the comment author)"""
     try:
-        comment = Comment.query.get(comment_id)
+        comment = Comment.query.get(comment_id)  # comment_id is already a string
         if not comment:
             return jsonify({'error': 'Comment not found'}), 404
         
-        # Check if user is the comment author
-        if comment.user_id != current_user.id:
+        # Check if user is the comment author (convert user IDs to string for comparison)
+        if comment.user_id != str(current_user.id):
             return jsonify({'error': 'Permission denied'}), 403
         
         db.session.delete(comment)
