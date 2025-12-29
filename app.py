@@ -928,20 +928,34 @@ def upload_multiple_files(current_user):
 
 @app.route('/api/v1/issues', methods=['GET'])
 def get_issues():
-    """Get all issues with optional filtering"""
+    """Get all issues with optional filtering and search"""
     try:
         # Query parameters
         page = request.args.get('page', 1, type=int)
         per_page = min(request.args.get('per_page', 20, type=int), 100)
         category = request.args.get('category')
         status = request.args.get('status')
+        search = request.args.get('search')  # New search parameter
         
         # Build query
         query = Issue.query
         
-        if category:
+        # Search functionality - search in title, description, and address
+        if search:
+            search_term = f"%{search}%"
+            query = query.filter(
+                db.or_(
+                    Issue.title.ilike(search_term),
+                    Issue.description.ilike(search_term),
+                    Issue.address.ilike(search_term)
+                )
+            )
+        
+        # Category filter
+        if category and category.lower() != 'all':
             query = query.filter(Issue.category == category)
         
+        # Status filter
         if status:
             query = query.filter(Issue.status == status)
         
