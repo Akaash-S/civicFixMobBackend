@@ -17,7 +17,7 @@ load_dotenv()
 
 class AuthTestSuite:
     def __init__(self):
-        self.backend_url = "http://3.110.42.224:80" #"http://3.110.42.224:80"
+        self.backend_url = "http://3.110.42.224:80"
         self.jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
         self.test_results = []
         self.passed_tests = 0
