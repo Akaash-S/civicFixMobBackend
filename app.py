@@ -116,8 +116,9 @@ class S3Service:
                 Bucket=self.bucket_name,
                 Key=unique_filename,
                 Body=file_data,
-                ContentType=content_type,
-                ACL='public-read'  # Make file publicly accessible
+                ContentType=content_type
+                # Removed ACL='public-read' - bucket doesn't allow ACLs
+                # Files will be accessible via bucket policy or CloudFront
             )
             
             # Generate public URL
