@@ -963,14 +963,24 @@ def upload_multiple_files(current_user):
 def upload_issue_media(current_user):
     """Upload media files for issue creation/update"""
     try:
+        logger.info(f"📤 Media upload request from user: {current_user.email}")
+        logger.info(f"📤 Request files: {list(request.files.keys())}")
+        logger.info(f"📤 Request form: {dict(request.form)}")
+        
         if not s3_service:
+            logger.error("📤 S3 service not available")
             return jsonify({'error': 'File upload service not available'}), 503
             
         if 'files' not in request.files:
+            logger.warning("📤 No 'files' field in request")
+            logger.warning(f"📤 Available fields: {list(request.files.keys())}")
             return jsonify({'error': 'No files provided'}), 400
         
         files = request.files.getlist('files')
+        logger.info(f"📤 Received {len(files)} files")
+        
         if not files or all(f.filename == '' for f in files):
+            logger.warning("📤 No files selected or all files have empty names")
             return jsonify({'error': 'No files selected'}), 400
         
         # Limit number of files for issues
