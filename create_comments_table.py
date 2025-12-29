@@ -22,7 +22,7 @@ def create_comments_table():
             db.session.execute(text("""
                 CREATE TABLE IF NOT EXISTS comments (
                     id SERIAL PRIMARY KEY,
-                    content TEXT NOT NULL,
+                    text TEXT NOT NULL,
                     issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

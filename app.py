@@ -248,7 +248,7 @@ class Comment(db.Model):
     __tablename__ = 'comments'
     
     id = db.Column(db.Integer, primary_key=True)
-    content = db.Column(db.Text, nullable=False)
+    text = db.Column(db.Text, nullable=False)  # Changed from 'content' to 'text' to match database
     issue_id = db.Column(db.Integer, db.ForeignKey('issues.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -260,7 +260,7 @@ class Comment(db.Model):
     def to_dict(self):
         return {
             'id': self.id,
-            'content': self.content,
+            'content': self.text,  # Map 'text' field to 'content' for API consistency
             'issue_id': self.issue_id,
             'user_id': self.user_id,
             'user_name': self.user.name if self.user else None,
@@ -1104,10 +1104,37 @@ def update_issue_status(current_user, issue_id):
 # Authentication Routes
 # ================================
 
-import jwt
-# ================================
-# Authentication Routes
-# ================================
+@app.route('/api/v1/auth/google', methods=['POST'])
+def authenticate_with_google():
+    """Authenticate user with Google OAuth via Supabase"""
+    try:
+        data = request.get_json()
+        if not data or 'id_token' not in data:
+            return jsonify({'error': 'Google ID token is required'}), 400
+        
+        id_token = data['id_token']
+        
+        # Verify the Supabase JWT token
+        user_data = verify_supabase_token(id_token)
+        if not user_data:
+            return jsonify({'error': 'Invalid Google ID token'}), 401
+        
+        # Sync user to database
+        user = sync_user_to_database(user_data)
+        if not user:
+            return jsonify({'error': 'Failed to create user account'}), 500
+        
+        logger.info(f"Google authentication successful for user: {user.email}")
+        
+        return jsonify({
+            'user': user.to_dict(),
+            'token': id_token,  # Return the same token for frontend use
+            'message': 'Authentication successful'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Google authentication failed: {e}")
+        return jsonify({'error': 'Authentication failed'}), 500
 
 @app.route('/api/v1/auth/test', methods=['GET'])
 @require_auth
@@ -1462,9 +1489,9 @@ def create_comment(current_user, issue_id):
         if not content:
             return jsonify({'error': 'Comment content cannot be empty'}), 400
         
-        # Create comment
+        # Create comment (using 'text' field to match database schema)
         comment = Comment(
-            content=content,
+            text=content,  # Changed from 'content' to 'text'
             issue_id=issue_id,
             user_id=current_user.id
         )
@@ -1505,7 +1532,7 @@ def update_comment(current_user, comment_id):
         if not content:
             return jsonify({'error': 'Comment content cannot be empty'}), 400
         
-        comment.content = content
+        comment.text = content  # Changed from 'content' to 'text'
         comment.updated_at = datetime.utcnow()
         
         db.session.commit()
@@ -1556,7 +1583,7 @@ def get_priority_options():
         {'value': 'HIGH', 'label': 'High', 'description': 'Important issue requiring attention'},
         {'value': 'URGENT', 'label': 'Urgent', 'description': 'Critical issue requiring immediate attention'}
     ]
-    return jsonify({'priorities': priorities})
+    return jsonify({'priority_options': priorities})
 
 # ================================
 # Error Handlers
@@ -1570,6 +1597,19 @@ def not_found(error):
 def internal_error(error):
     db.session.rollback()
     return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# Application Startup
+# ================================
+
+if __name__ == '__main__':
+    with app.app_context():
+        # Create tables if they don't exist
+        db.create_all()
+        logger.info("Database tables created/verified")
+    
+    # Run the application
+    app.run(host='0.0.0.0', port=5000, debug=False)
 
 # ================================
 # Initialize Application
