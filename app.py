@@ -418,7 +418,7 @@ def require_auth(f):
                 'message': 'Authorization header must be: Bearer <token>'
             }), 401
         
-        # Step 3: Extract token (nginx-compatible with perfect security)
+        # Step 3: Extract token (strict validation - nginx must preserve exact headers)
         try:
             # Check for exact "Bearer " prefix (case sensitive, single space)
             if not auth_header.startswith('Bearer '):
@@ -431,55 +431,25 @@ def require_auth(f):
             # Extract token part after "Bearer "
             token_part = auth_header[7:]  # Remove "Bearer " (7 characters)
             
-            # Detect if request is coming through nginx proxy
-            is_proxied = request.headers.get('X-Forwarded-For') is not None
+            # STRICT VALIDATION: Check for multiple spaces or trailing spaces
+            if '  ' in auth_header or auth_header.rstrip() != auth_header:
+                logger.warning(f"Invalid Authorization header with extra spaces from {request.remote_addr}: '{auth_header}'")
+                return jsonify({
+                    'error': 'Invalid Authorization header format',
+                    'message': 'Authorization header must be: Bearer <token> (single space, no trailing spaces)'
+                }), 401
             
-            if is_proxied:
-                # NGINX MODE: More flexible validation (nginx may normalize some headers)
-                logger.debug(f"Request from nginx proxy, using nginx-compatible validation")
-                
-                # Still check for multiple spaces (nginx preserves these)
-                if '  ' in auth_header:
-                    logger.warning(f"Invalid Authorization header with multiple spaces from {request.remote_addr}")
-                    return jsonify({
-                        'error': 'Invalid Authorization header format',
-                        'message': 'Authorization header must be: Bearer <token> (single space only)'
-                    }), 401
-                
-                # For nginx, we focus on token validity rather than exact header formatting
-                token = token_part.strip()
-                
-                # Ensure token is not empty
-                if not token:
-                    logger.warning(f"Empty token after Bearer from {request.remote_addr}")
-                    return jsonify({
-                        'error': 'Empty token',
-                        'message': 'JWT token cannot be empty after Bearer'
-                    }), 401
-                    
-            else:
-                # DIRECT MODE: Strict validation (direct backend access)
-                logger.debug(f"Direct backend access, using strict validation")
-                
-                # Check for multiple spaces or trailing spaces (should be rejected)
-                if '  ' in auth_header or auth_header.rstrip() != auth_header:
-                    logger.warning(f"Invalid Authorization header with extra spaces from {request.remote_addr}")
-                    return jsonify({
-                        'error': 'Invalid Authorization header format',
-                        'message': 'Authorization header must be: Bearer <token> (single space, no trailing spaces)'
-                    }), 401
-                
-                # Additional validation: token should not be empty after Bearer
-                if not token_part or token_part.isspace():
-                    logger.warning(f"Empty token after Bearer from {request.remote_addr}")
-                    return jsonify({
-                        'error': 'Empty token',
-                        'message': 'JWT token cannot be empty after Bearer'
-                    }), 401
-                
-                token = token_part.strip()
+            # Validate token is not empty after Bearer
+            if not token_part or token_part.isspace():
+                logger.warning(f"Empty token after Bearer from {request.remote_addr}")
+                return jsonify({
+                    'error': 'Empty token',
+                    'message': 'JWT token cannot be empty after Bearer'
+                }), 401
             
-            # Common validation for both modes
+            token = token_part.strip()
+            
+            # Final validation: token should not be empty after stripping
             if not token:
                 logger.warning(f"Token is empty after processing from {request.remote_addr}")
                 return jsonify({
