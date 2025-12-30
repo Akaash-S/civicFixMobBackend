@@ -164,6 +164,13 @@ class User(db.Model):
     name = db.Column(db.String(255), nullable=False)
     phone = db.Column(db.String(20))
     photo_url = db.Column(db.String(500))
+    bio = db.Column(db.Text)  # Added bio field
+    # Settings fields
+    notifications_enabled = db.Column(db.Boolean, default=True)
+    dark_mode = db.Column(db.Boolean, default=False)
+    anonymous_reporting = db.Column(db.Boolean, default=False)
+    satellite_view = db.Column(db.Boolean, default=False)
+    save_to_gallery = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -178,6 +185,12 @@ class User(db.Model):
             'name': self.name,
             'phone': self.phone,
             'photo_url': self.photo_url,
+            'bio': self.bio,
+            'notifications_enabled': self.notifications_enabled,
+            'dark_mode': self.dark_mode,
+            'anonymous_reporting': self.anonymous_reporting,
+            'satellite_view': self.satellite_view,
+            'save_to_gallery': self.save_to_gallery,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -1350,15 +1363,38 @@ def update_current_user(current_user):
     try:
         data = request.get_json()
         
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        # Update profile fields
         if 'name' in data:
-            current_user.name = data['name']
+            name = data['name'].strip()
+            if not name:
+                return jsonify({'error': 'Name cannot be empty'}), 400
+            if len(name) > 255:
+                return jsonify({'error': 'Name too long (max 255 characters)'}), 400
+            current_user.name = name
+            
         if 'phone' in data:
-            current_user.phone = data['phone']
+            phone = data['phone'].strip() if data['phone'] else ''
+            if len(phone) > 20:
+                return jsonify({'error': 'Phone number too long (max 20 characters)'}), 400
+            current_user.phone = phone
+            
         if 'photo_url' in data:
-            current_user.photo_url = data['photo_url']
+            photo_url = data['photo_url'].strip() if data['photo_url'] else ''
+            if len(photo_url) > 500:
+                return jsonify({'error': 'Photo URL too long (max 500 characters)'}), 400
+            current_user.photo_url = photo_url
+            
+        if 'bio' in data:
+            bio = data['bio'].strip() if data['bio'] else ''
+            current_user.bio = bio
         
         current_user.updated_at = datetime.utcnow()
         db.session.commit()
+        
+        logger.info(f"Profile updated for user: {current_user.email}")
         
         return jsonify({
             'message': 'Profile updated successfully',
@@ -1368,6 +1404,81 @@ def update_current_user(current_user):
     except Exception as e:
         logger.error(f"Error updating user profile: {e}")
         db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/users/me/settings', methods=['PUT'])
+@require_auth
+def update_user_settings(current_user):
+    """Update user settings"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        # Update settings fields
+        if 'notifications_enabled' in data:
+            current_user.notifications_enabled = bool(data['notifications_enabled'])
+            
+        if 'dark_mode' in data:
+            current_user.dark_mode = bool(data['dark_mode'])
+            
+        if 'anonymous_reporting' in data:
+            current_user.anonymous_reporting = bool(data['anonymous_reporting'])
+            
+        if 'satellite_view' in data:
+            current_user.satellite_view = bool(data['satellite_view'])
+            
+        if 'save_to_gallery' in data:
+            current_user.save_to_gallery = bool(data['save_to_gallery'])
+        
+        current_user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        logger.info(f"Settings updated for user: {current_user.email}")
+        
+        return jsonify({
+            'message': 'Settings updated successfully',
+            'user': current_user.to_dict()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating user settings: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/users/me/password', methods=['PUT'])
+@require_auth
+def change_password(current_user):
+    """Change user password (Supabase integration)"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        # For Supabase authentication, password changes should be handled on the client side
+        # using Supabase's updateUser method. This endpoint serves as a notification/logging endpoint.
+        
+        # Validate that required fields are present (for logging purposes)
+        if 'current_password' not in data or 'new_password' not in data:
+            return jsonify({
+                'error': 'Current password and new password are required',
+                'message': 'For Supabase users, password changes must be initiated from the client app using Supabase auth methods'
+            }), 400
+        
+        # Since we're using Supabase auth, we can't directly change passwords on the backend
+        # The frontend should use Supabase's updateUser method
+        logger.info(f"Password change request received for user: {current_user.email}")
+        
+        return jsonify({
+            'message': 'Password change must be handled through Supabase client',
+            'instructions': 'Use supabase.auth.updateUser({ password: newPassword }) in your frontend app',
+            'supabase_method': 'updateUser'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in password change endpoint: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
