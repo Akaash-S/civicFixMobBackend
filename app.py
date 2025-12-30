@@ -1356,15 +1356,33 @@ def get_current_user(current_user):
     """Get current user profile"""
     return jsonify({'user': current_user.to_dict()})
 
+@app.route('/api/v1/debug/auth', methods=['GET'])
+@require_auth
+def debug_auth(current_user):
+    """Debug authentication endpoint"""
+    return jsonify({
+        'message': 'Authentication working correctly',
+        'user': current_user.to_dict(),
+        'timestamp': datetime.utcnow().isoformat(),
+        'headers': dict(request.headers),
+        'endpoint': request.endpoint
+    }), 200
+
 @app.route('/api/v1/users/me', methods=['PUT'])
 @require_auth
 def update_current_user(current_user):
     """Update current user profile"""
     try:
+        logger.info(f"Profile update request from user: {current_user.email}")
         data = request.get_json()
+        logger.info(f"Profile update data: {data}")
         
         if not data:
+            logger.warning("Empty request body for profile update")
             return jsonify({'error': 'Request body required'}), 400
+        
+        # Track what fields are being updated
+        updated_fields = []
         
         # Update profile fields
         if 'name' in data:
@@ -1373,22 +1391,51 @@ def update_current_user(current_user):
                 return jsonify({'error': 'Name cannot be empty'}), 400
             if len(name) > 255:
                 return jsonify({'error': 'Name too long (max 255 characters)'}), 400
+            old_name = current_user.name
             current_user.name = name
+            updated_fields.append(f"name: '{old_name}' -> '{name}'")
             
         if 'phone' in data:
             phone = data['phone'].strip() if data['phone'] else ''
             if len(phone) > 20:
                 return jsonify({'error': 'Phone number too long (max 20 characters)'}), 400
+            old_phone = current_user.phone
             current_user.phone = phone
+            updated_fields.append(f"phone: '{old_phone}' -> '{phone}'")
             
         if 'photo_url' in data:
             photo_url = data['photo_url'].strip() if data['photo_url'] else ''
             if len(photo_url) > 500:
                 return jsonify({'error': 'Photo URL too long (max 500 characters)'}), 400
+            old_photo = current_user.photo_url
             current_user.photo_url = photo_url
+            updated_fields.append(f"photo_url: '{old_photo}' -> '{photo_url}'")
             
         if 'bio' in data:
             bio = data['bio'].strip() if data['bio'] else ''
+            old_bio = current_user.bio
+            current_user.bio = bio
+            updated_fields.append(f"bio: '{old_bio}' -> '{bio}'")
+        
+        current_user.updated_at = datetime.utcnow()
+        
+        logger.info(f"Updating fields for {current_user.email}: {updated_fields}")
+        
+        # Commit to database
+        db.session.commit()
+        
+        logger.info(f"Profile updated successfully for user: {current_user.email}")
+        logger.info(f"Updated user data: name='{current_user.name}', bio='{current_user.bio}', phone='{current_user.phone}'")
+        
+        return jsonify({
+            'message': 'Profile updated successfully',
+            'user': current_user.to_dict()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating user profile: {e}", exc_info=True)
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
             current_user.bio = bio
         
         current_user.updated_at = datetime.utcnow()
