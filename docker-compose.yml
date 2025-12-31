@@ -30,8 +30,8 @@ services:
       - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
       
       # Docker Configuration (Skip validation by default for reliable startup)
-      - SKIP_VALIDATION=${SKIP_VALIDATION:-true}
-      - SKIP_AUTH_TEST=${SKIP_AUTH_TEST:-true}
+      - SKIP_VALIDATION=${SKIP_VALIDATION:-false}
+      - SKIP_AUTH_TEST=${SKIP_AUTH_TEST:-false}
       - RUN_MIGRATION=${RUN_MIGRATION:-false}
       
       # Optional Configuration

@@ -26,6 +26,7 @@ RUN pip install --upgrade pip
 # Core Flask packages
 RUN pip install Flask==3.0.0
 RUN pip install Flask-SQLAlchemy==3.1.1
+RUN pip install Flask-Migrate==4.0.5
 RUN pip install Flask-CORS==4.0.0
 
 # Database
@@ -34,8 +35,9 @@ RUN pip install psycopg2-binary==2.9.9
 # AWS (let it resolve dependencies automatically)
 RUN pip install boto3
 
-# Authentication
+# Authentication & Security
 RUN pip install PyJWT
+RUN pip install cryptography
 
 # Utilities
 RUN pip install python-dotenv
