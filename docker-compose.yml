@@ -1,10 +1,8 @@
-# CivicFix Backend - Perfect Authentication System
+# CivicFix Backend - Production Docker Compose
 # Uses Supabase for authentication, AWS RDS for database, AWS S3 for file storage
-# Includes comprehensive authentication validation
-version: '3.8'
 
 services:
-  # CivicFix Backend with Perfect Authentication
+  # CivicFix Backend
   backend:
     build:
       context: .
@@ -17,6 +15,7 @@ services:
       # Flask Configuration (Required)
       - FLASK_ENV=${FLASK_ENV:-production}
       - SECRET_KEY=${SECRET_KEY}
+      - PORT=5000
       
       # AWS RDS Database (Required)
       - DATABASE_URL=${DATABASE_URL}
@@ -30,21 +29,30 @@ services:
       # Supabase Authentication (Required)
       - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
       
-      # Docker Configuration (Skip validation by default)
+      # Docker Configuration (Skip validation by default for reliable startup)
       - SKIP_VALIDATION=${SKIP_VALIDATION:-true}
       - SKIP_AUTH_TEST=${SKIP_AUTH_TEST:-true}
       - RUN_MIGRATION=${RUN_MIGRATION:-false}
       
       # Optional Configuration
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      
+      # Python Configuration
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 15s
       retries: 5
-      start_period: 60s
+      start_period: 90s
+    volumes:
+      # Mount .env file if it exists (optional)
+      - ./.env:/app/.env:ro
+    networks:
+      - civicfix-network
 
-  # Nginx Reverse Proxy with Authentication Support
+  # Nginx Reverse Proxy (Optional)
   nginx:
     image: nginx:alpine
     container_name: civicfix-nginx
@@ -62,5 +70,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - civicfix-network
 
-# No volumes needed - using AWS RDS and S3
+networks:
+  civicfix-network:
+    driver: bridge
+
+# No persistent volumes needed - using AWS RDS and S3

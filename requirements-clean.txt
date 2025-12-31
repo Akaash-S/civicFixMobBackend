@@ -1,25 +1,41 @@
-# CivicFix Backend - Clean Requirements
-# Minimal, reliable dependencies for production deployment
+# CivicFix Backend - Production Requirements
+# Comprehensive dependencies for reliable deployment
 
-# Core Flask
+# Core Flask Framework
 Flask==3.0.0
 Flask-SQLAlchemy==3.1.1
 Flask-Migrate==4.0.5
 Flask-CORS==4.0.0
 
-# Database
+# Database Drivers
 psycopg2-binary==2.9.9
 
 # AWS Services
 boto3==1.34.0
+botocore==1.34.0
 
-# Firebase (optional)
+# Authentication & Security
+PyJWT==2.8.0
+cryptography==41.0.7
+
+# Firebase (Optional - for legacy support)
 firebase-admin==6.4.0
 
-# WSGI Server
+# HTTP & Utilities
+requests==2.31.0
+urllib3==2.1.0
+
+# Environment & Configuration
+python-dotenv==1.0.0
+
+# WSGI Production Server
 gunicorn==21.2.0
 
-# Utilities
-python-dotenv==1.0.0
-requests==2.31.0
-PyJWT==2.8.0
+# Date/Time Utilities
+python-dateutil==2.8.2
+
+# JSON Web Tokens
+pyjwt[crypto]==2.8.0
+
+# Werkzeug (Flask dependency - pinned for stability)
+Werkzeug==3.0.1

@@ -1,3 +1,6 @@
+# CivicFix Backend - Docker Ignore
+# Exclude unnecessary files from Docker build context
+
 # Git
 .git
 .gitignore
@@ -19,7 +22,6 @@ nosetests.xml
 coverage.xml
 *.cover
 *.log
-.git
 .mypy_cache
 .pytest_cache
 .hypothesis
@@ -50,12 +52,6 @@ Thumbs.db
 *.md
 docs/
 
-# Development files
-.env
-.env.local
-.env.development
-.env.test
-
 # Logs
 logs/
 *.log
@@ -65,7 +61,7 @@ temp/
 tmp/
 uploads/
 
-# Docker
+# Docker files (exclude from build context)
 Dockerfile*
 docker-compose*
 .dockerignore
@@ -82,3 +78,25 @@ node_modules/
 build/
 dist/
 *.egg-info/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+instance/
+
+# Test files (exclude most, keep essential ones)
+test-*.py
+debug-*.py
+deploy-*.py
+quick-*.py
+verify-*.py
+check-*.py
+diagnose-*.py
+
+# Keep essential files (override exclusions)
+!test_docker_startup.py
+!test_auth_quick.py
+!test_user_sync.py
+!validate_aws_setup.py
+!migrate_database.py

@@ -2129,19 +2129,6 @@ def internal_error(error):
     return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
-# Application Startup
-# ================================
-
-if __name__ == '__main__':
-    with app.app_context():
-        # Create tables if they don't exist
-        db.create_all()
-        logger.info("Database tables created/verified")
-    
-    # Run the application
-    app.run(host='0.0.0.0', port=5000, debug=False)
-
-# ================================
 # Initialize Application
 # ================================
 
@@ -2160,9 +2147,6 @@ def create_tables():
                 logger.warning("Database table creation failed but continuing (validation skipped)")
 
 if __name__ == '__main__':
-    # Initialize Firebase
-    # init_firebase()
-    
     # Create tables
     create_tables()
     
