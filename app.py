@@ -1523,64 +1523,6 @@ def set_onboarding_password(current_user):
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/api/v1/onboarding/language', methods=['POST'])
-@require_auth
-def set_onboarding_language(current_user):
-    """Set language preference during onboarding"""
-    try:
-        data = request.get_json()
-        
-        if not data or 'language' not in data:
-            return jsonify({'error': 'Language is required'}), 400
-        
-        language = data['language'].strip().lower()
-        
-        # Validate language (you can expand this list)
-        valid_languages = ['en', 'ta', 'hi', 'es', 'fr', 'de', 'zh', 'ja', 'ko']
-        if language not in valid_languages:
-            return jsonify({'error': f'Unsupported language. Supported: {", ".join(valid_languages)}'}), 400
-        
-        # Update language
-        current_user.language = language
-        current_user.updated_at = datetime.utcnow()
-        
-        db.session.commit()
-        
-        logger.info(f"Language set to {language} for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Language set successfully',
-            'user': current_user.to_dict()
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error setting language: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/onboarding/complete', methods=['POST'])
-@require_auth
-def complete_onboarding(current_user):
-    """Mark onboarding as completed"""
-    try:
-        # Mark onboarding as completed
-        current_user.onboarding_completed = True
-        current_user.updated_at = datetime.utcnow()
-        
-        db.session.commit()
-        
-        logger.info(f"Onboarding completed for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Onboarding completed successfully',
-            'user': current_user.to_dict()
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error completing onboarding: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
 # ================================
 # User Routes
 # ================================
