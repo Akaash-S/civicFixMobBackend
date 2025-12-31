@@ -1502,44 +1502,6 @@ def test_auth(current_user):
     }), 200
 
 # ================================
-# Onboarding Routes
-# ================================
-
-@app.route('/api/v1/onboarding/password', methods=['POST'])
-@require_auth
-def set_onboarding_password(current_user):
-    """Set password during onboarding"""
-    try:
-        data = request.get_json()
-        
-        if not data or 'password' not in data:
-            return jsonify({'error': 'Password is required'}), 400
-        
-        password = data['password'].strip()
-        
-        # Validate password
-        if len(password) < 8:
-            return jsonify({'error': 'Password must be at least 8 characters long'}), 400
-        
-        # Hash and store password
-        current_user.password_hash = hash_password(password)
-        current_user.updated_at = datetime.utcnow()
-        
-        db.session.commit()
-        
-        logger.info(f"Password set for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Password set successfully',
-            'user': current_user.to_dict()
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error setting password: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-# ================================
 # User Routes
 # ================================
 

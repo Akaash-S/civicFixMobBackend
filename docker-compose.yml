@@ -32,7 +32,7 @@ services:
       # Docker Configuration (Skip validation by default for reliable startup)
       - SKIP_VALIDATION=${SKIP_VALIDATION:-false}
       - SKIP_AUTH_TEST=${SKIP_AUTH_TEST:-false}
-      - RUN_MIGRATION=${RUN_MIGRATION:-false}
+      - RUN_MIGRATION=${RUN_MIGRATION:-true}
       
       # Optional Configuration
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
