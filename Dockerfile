@@ -20,33 +20,46 @@ RUN apt-get update && apt-get install -y \
 # Create app directory
 WORKDIR /app
 
-# Copy requirements first for better Docker layer caching
-COPY requirements-clean.txt requirements.txt
+# Install Python dependencies individually to avoid conflicts
+RUN pip install --upgrade pip
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Core Flask packages
+RUN pip install Flask==3.0.0
+RUN pip install Flask-SQLAlchemy==3.1.1
+RUN pip install Flask-CORS==4.0.0
+
+# Database
+RUN pip install psycopg2-binary==2.9.9
+
+# AWS (let it resolve dependencies automatically)
+RUN pip install boto3
+
+# Authentication
+RUN pip install PyJWT
+
+# Utilities
+RUN pip install python-dotenv
+RUN pip install requests
+RUN pip install gunicorn
+
+# Optional packages (install if possible, continue if not)
+RUN pip install firebase-admin || echo "Firebase admin not installed"
 
 # Copy application files
 COPY app.py .
 COPY startup.sh .
 
-# Copy utility scripts (optional but useful for debugging)
+# Copy utility scripts
 COPY validate_aws_setup.py .
 COPY migrate_database.py .
 COPY test_docker_startup.py .
 
-# Copy test files (optional)
+# Copy test files
 COPY test_auth_quick.py .
 COPY test_user_sync.py .
 
-# Copy migration files (if they exist)
-COPY add_*.py ./
-COPY create_*.py ./
-COPY migrate_*.py ./
-
-# Copy environment file (will be overridden by docker-compose)
-COPY .env* ./
+# Copy environment file
+COPY .env ./
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
@@ -59,7 +72,7 @@ USER appuser
 # Expose port
 EXPOSE $PORT
 
-# Health check - simple and reliable
+# Health check
 HEALTHCHECK --interval=30s --timeout=15s --start-period=90s --retries=5 \
     CMD curl -f http://localhost:$PORT/health || exit 1
 
