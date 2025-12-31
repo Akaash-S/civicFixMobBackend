@@ -236,6 +236,7 @@ class Issue(db.Model):
     # Support both old and new schema
     image_url = db.Column(db.String(500))  # Legacy field
     image_urls = db.Column(db.Text)  # New field - JSON array of image URLs
+    upvotes = db.Column(db.Integer, default=0, nullable=False)  # Upvotes count
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -278,6 +279,7 @@ class Issue(db.Model):
             'longitude': self.longitude,
             'address': self.address,
             'image_urls': self.get_image_urls(),
+            'upvotes': self.upvotes,
             'created_by': self.created_by,
             'creator_name': self.creator.name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
