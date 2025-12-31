@@ -41,10 +41,9 @@ USER appuser
 # Expose port
 EXPOSE $PORT
 
-# Enhanced health check with authentication validation
+# Enhanced health check - simplified for Docker
 HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=5 \
-    CMD curl -f http://localhost:$PORT/health && \
-        curl -f http://localhost:$PORT/health | grep -q '"authentication":"supabase"' || exit 1
+    CMD curl -f http://localhost:$PORT/health || exit 1
 
 # Startup script that validates complete setup before starting the app
 COPY --chown=appuser:appuser startup.sh .

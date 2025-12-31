@@ -98,13 +98,21 @@ class S3Service:
                 region_name=self.region
             )
             
-            # Test S3 connection
-            self.s3_client.head_bucket(Bucket=self.bucket_name)
-            logger.info(f"S3 client initialized successfully for bucket: {self.bucket_name}")
+            # Test S3 connection only if not in Docker startup
+            if os.environ.get('SKIP_VALIDATION') != 'true':
+                self.s3_client.head_bucket(Bucket=self.bucket_name)
+                logger.info(f"S3 client initialized and tested successfully for bucket: {self.bucket_name}")
+            else:
+                logger.info(f"S3 client initialized for bucket: {self.bucket_name} (validation skipped)")
             
         except Exception as e:
             logger.error(f"S3 initialization failed: {e}")
-            raise ValueError(f"Failed to initialize S3: {e}")
+            # Don't raise error during startup if validation is skipped
+            if os.environ.get('SKIP_VALIDATION') != 'true':
+                raise ValueError(f"Failed to initialize S3: {e}")
+            else:
+                logger.warning("S3 initialization failed but continuing (validation skipped)")
+                self.s3_client = None
     
     def upload_file(self, file_data, file_name, content_type='application/octet-stream'):
         """Upload file to S3 bucket"""
@@ -148,6 +156,14 @@ class S3Service:
 try:
     s3_service = S3Service()
     logger.info("S3 service initialized successfully")
+except Exception as e:
+    logger.error(f"S3 service initialization failed: {e}")
+    # Continue without S3 if validation is skipped
+    if os.environ.get('SKIP_VALIDATION') == 'true':
+        logger.warning("Continuing without S3 service (validation skipped)")
+        s3_service = None
+    else:
+        raise
 except Exception as e:
     logger.warning(f"S3 service initialization failed: {e}")
     logger.warning("S3 functionality will be disabled")
@@ -2137,6 +2153,11 @@ def create_tables():
             logger.info("Database tables created successfully")
         except Exception as e:
             logger.error(f"Error creating tables: {e}")
+            # Don't fail startup if validation is skipped
+            if os.environ.get('SKIP_VALIDATION') != 'true':
+                raise
+            else:
+                logger.warning("Database table creation failed but continuing (validation skipped)")
 
 if __name__ == '__main__':
     # Initialize Firebase

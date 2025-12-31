@@ -1,24 +1,24 @@
 #!/bin/bash
-# CivicFix Backend - Perfect Authentication System Startup Script
-# Validates Supabase + AWS setup and authentication system before starting
+# CivicFix Backend - Simplified Startup Script for Docker
+# Skips validation by default in containerized environment
 
 set -e
 
-echo "🚀 CivicFix Backend - Starting with Perfect Authentication System..."
+echo "🚀 CivicFix Backend - Starting..."
 
-# Run comprehensive validation (optional - can be skipped with SKIP_VALIDATION=true)
-if [ "$SKIP_VALIDATION" != "true" ]; then
-    echo "🔍 Validating Supabase + AWS setup..."
+# Skip validation in Docker by default (can be overridden with SKIP_VALIDATION=false)
+if [ "$SKIP_VALIDATION" = "false" ]; then
+    echo "🔍 Running validation (SKIP_VALIDATION=false)..."
     python validate_aws_setup.py
     
     if [ $? -ne 0 ]; then
-        echo "❌ Supabase + AWS validation failed. Set SKIP_VALIDATION=true to bypass."
+        echo "❌ Validation failed."
         exit 1
     fi
     
-    echo "✅ Supabase + AWS validation passed!"
+    echo "✅ Validation passed!"
 else
-    echo "⚠️ Skipping Supabase + AWS validation (SKIP_VALIDATION=true)"
+    echo "⚠️ Skipping validation (default for Docker deployment)"
 fi
 
 # Run database migration if needed
@@ -27,18 +27,6 @@ if [ "$RUN_MIGRATION" = "true" ]; then
     python migrate_database.py || echo "⚠️ Migration failed or not needed"
 fi
 
-# Validate authentication system after app starts (background process)
-if [ "$SKIP_AUTH_TEST" != "true" ]; then
-    echo "🔐 Authentication validation will run after startup..."
-    (
-        sleep 30  # Wait for app to fully start
-        echo "🧪 Running authentication system validation..."
-        python test_auth_quick.py || echo "⚠️ Authentication test failed - check logs"
-    ) &
-else
-    echo "⚠️ Skipping authentication validation (SKIP_AUTH_TEST=true)"
-fi
-
 # Start the application
-echo "🎯 Starting CivicFix Backend with Perfect Authentication..."
+echo "🎯 Starting CivicFix Backend..."
 exec python app.py

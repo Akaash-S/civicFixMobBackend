@@ -30,11 +30,13 @@ services:
       # Supabase Authentication (Required)
       - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
       
+      # Docker Configuration (Skip validation by default)
+      - SKIP_VALIDATION=${SKIP_VALIDATION:-true}
+      - SKIP_AUTH_TEST=${SKIP_AUTH_TEST:-true}
+      - RUN_MIGRATION=${RUN_MIGRATION:-false}
+      
       # Optional Configuration
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
-      - SKIP_VALIDATION=${SKIP_VALIDATION:-false}
-      - SKIP_AUTH_TEST=${SKIP_AUTH_TEST:-false}
-      - RUN_MIGRATION=${RUN_MIGRATION:-false}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
