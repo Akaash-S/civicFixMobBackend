@@ -1678,22 +1678,6 @@ def update_current_user(current_user):
         logger.error(f"Error updating user profile: {e}", exc_info=True)
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
-            current_user.bio = bio
-        
-        current_user.updated_at = datetime.utcnow()
-        db.session.commit()
-        
-        logger.info(f"Profile updated for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Profile updated successfully',
-            'user': current_user.to_dict()
-        })
-        
-    except Exception as e:
-        logger.error(f"Error updating user profile: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/v1/users/me/settings', methods=['PUT'])
 @require_auth
