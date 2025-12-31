@@ -18,6 +18,8 @@ from werkzeug.utils import secure_filename
 import jwt
 from functools import lru_cache
 import time
+import hashlib
+import secrets
 
 # Load environment variables from .env file
 try:
@@ -166,6 +168,10 @@ class User(db.Model):
     phone = db.Column(db.String(20))
     photo_url = db.Column(db.String(500))
     bio = db.Column(db.Text)  # Added bio field
+    # Onboarding fields
+    password_hash = db.Column(db.String(255))  # Hashed password for account security
+    language = db.Column(db.String(10), default='en')  # User preferred language
+    onboarding_completed = db.Column(db.Boolean, default=False)  # Onboarding completion status
     # Settings fields
     notifications_enabled = db.Column(db.Boolean, default=True)
     dark_mode = db.Column(db.Boolean, default=False)
@@ -188,6 +194,8 @@ class User(db.Model):
             'phone': self.phone,
             'photo_url': self.photo_url,
             'bio': self.bio,
+            'language': self.language,
+            'onboarding_completed': self.onboarding_completed,
             'notifications_enabled': self.notifications_enabled,
             'dark_mode': self.dark_mode,
             'anonymous_reporting': self.anonymous_reporting,
@@ -742,6 +750,24 @@ def sync_user_to_database(user_data):
         except:
             pass  # Ignore rollback errors
         return None
+
+# ================================
+# Password Utility Functions
+# ================================
+
+def hash_password(password: str) -> str:
+    """Hash a password using SHA-256 with salt"""
+    salt = secrets.token_hex(16)
+    password_hash = hashlib.sha256((password + salt).encode()).hexdigest()
+    return f"{salt}:{password_hash}"
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against stored hash"""
+    try:
+        salt, password_hash = stored_hash.split(':')
+        return hashlib.sha256((password + salt).encode()).hexdigest() == password_hash
+    except ValueError:
+        return False
 
 def check_user_permissions(user, endpoint):
     """
@@ -1303,6 +1329,116 @@ def update_issue_status(current_user, issue_id):
         return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
+# Onboarding Routes
+# ================================
+
+@app.route('/api/v1/onboarding/password', methods=['POST'])
+@require_auth
+def set_onboarding_password(current_user):
+    """Set password during onboarding"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'password' not in data:
+            return jsonify({'error': 'Password is required'}), 400
+        
+        password = data['password'].strip()
+        
+        # Validate password
+        if len(password) < 8:
+            return jsonify({'error': 'Password must be at least 8 characters long'}), 400
+        
+        if len(password) > 128:
+            return jsonify({'error': 'Password too long (max 128 characters)'}), 400
+        
+        # Hash password
+        import bcrypt
+        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        # Update user
+        current_user.password_hash = password_hash
+        current_user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        logger.info(f"Password set for user: {current_user.email}")
+        
+        return jsonify({
+            'message': 'Password set successfully',
+            'user': current_user.to_dict()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error setting password: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/onboarding/language', methods=['POST'])
+@require_auth
+def set_onboarding_language(current_user):
+    """Set language preference during onboarding"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'language' not in data:
+            return jsonify({'error': 'Language is required'}), 400
+        
+        language = data['language'].strip().lower()
+        
+        # Validate language
+        supported_languages = ['en', 'ta']  # English, Tamil
+        if language not in supported_languages:
+            return jsonify({
+                'error': 'Unsupported language',
+                'supported_languages': supported_languages
+            }), 400
+        
+        # Update user
+        current_user.language = language
+        current_user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        logger.info(f"Language set to {language} for user: {current_user.email}")
+        
+        return jsonify({
+            'message': 'Language set successfully',
+            'user': current_user.to_dict()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error setting language: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/onboarding/complete', methods=['POST'])
+@require_auth
+def complete_onboarding(current_user):
+    """Complete the onboarding process"""
+    try:
+        # Validate that required onboarding steps are completed
+        if not current_user.password_hash:
+            return jsonify({'error': 'Password must be set before completing onboarding'}), 400
+        
+        if not current_user.language:
+            return jsonify({'error': 'Language must be set before completing onboarding'}), 400
+        
+        # Mark onboarding as completed
+        current_user.onboarding_completed = True
+        current_user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        logger.info(f"Onboarding completed for user: {current_user.email}")
+        
+        return jsonify({
+            'message': 'Onboarding completed successfully',
+            'user': current_user.to_dict()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error completing onboarding: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
 # Authentication Routes
 # ================================
 
@@ -1348,6 +1484,102 @@ def test_auth(current_user):
         'timestamp': datetime.utcnow().isoformat(),
         'provider': 'supabase'
     }), 200
+
+# ================================
+# Onboarding Routes
+# ================================
+
+@app.route('/api/v1/onboarding/password', methods=['POST'])
+@require_auth
+def set_onboarding_password(current_user):
+    """Set password during onboarding"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'password' not in data:
+            return jsonify({'error': 'Password is required'}), 400
+        
+        password = data['password'].strip()
+        
+        # Validate password
+        if len(password) < 8:
+            return jsonify({'error': 'Password must be at least 8 characters long'}), 400
+        
+        # Hash and store password
+        current_user.password_hash = hash_password(password)
+        current_user.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        logger.info(f"Password set for user: {current_user.email}")
+        
+        return jsonify({
+            'message': 'Password set successfully',
+            'user': current_user.to_dict()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error setting password: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/onboarding/language', methods=['POST'])
+@require_auth
+def set_onboarding_language(current_user):
+    """Set language preference during onboarding"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'language' not in data:
+            return jsonify({'error': 'Language is required'}), 400
+        
+        language = data['language'].strip().lower()
+        
+        # Validate language (you can expand this list)
+        valid_languages = ['en', 'ta', 'hi', 'es', 'fr', 'de', 'zh', 'ja', 'ko']
+        if language not in valid_languages:
+            return jsonify({'error': f'Unsupported language. Supported: {", ".join(valid_languages)}'}), 400
+        
+        # Update language
+        current_user.language = language
+        current_user.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        logger.info(f"Language set to {language} for user: {current_user.email}")
+        
+        return jsonify({
+            'message': 'Language set successfully',
+            'user': current_user.to_dict()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error setting language: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/onboarding/complete', methods=['POST'])
+@require_auth
+def complete_onboarding(current_user):
+    """Mark onboarding as completed"""
+    try:
+        # Mark onboarding as completed
+        current_user.onboarding_completed = True
+        current_user.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        logger.info(f"Onboarding completed for user: {current_user.email}")
+        
+        return jsonify({
+            'message': 'Onboarding completed successfully',
+            'user': current_user.to_dict()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error completing onboarding: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
 # User Routes
