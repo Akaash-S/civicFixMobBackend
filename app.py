@@ -1367,9 +1367,8 @@ def set_onboarding_password(current_user):
         if len(password) > 128:
             return jsonify({'error': 'Password too long (max 128 characters)'}), 400
         
-        # Hash password
-        import bcrypt
-        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        # Hash password using existing function
+        password_hash = hash_password(password)
         
         # Update user
         current_user.password_hash = password_hash
