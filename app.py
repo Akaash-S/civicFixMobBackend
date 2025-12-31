@@ -161,7 +161,8 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     firebase_uid = db.Column(db.String(128), unique=True, nullable=False, index=True)
     email = db.Column(db.String(255), unique=True, nullable=False)
-    name = db.Column(db.String(255), nullable=False)
+    name = db.Column(db.String(255), nullable=False)  # Google OAuth name (read-only)
+    display_name = db.Column(db.String(255))  # User-customizable display name
     phone = db.Column(db.String(20))
     photo_url = db.Column(db.String(500))
     bio = db.Column(db.Text)  # Added bio field
@@ -183,6 +184,7 @@ class User(db.Model):
             'firebase_uid': self.firebase_uid,
             'email': self.email,
             'name': self.name,
+            'display_name': self.display_name,
             'phone': self.phone,
             'photo_url': self.photo_url,
             'bio': self.bio,
@@ -643,6 +645,7 @@ def sync_user_to_database(user_data):
                     firebase_uid=uid,
                     email=email,
                     name=name,
+                    display_name=name,  # Set display_name to same as name initially
                     phone='',
                     photo_url=user_data.get('user_metadata', {}).get('avatar_url', '') or ''
                 )
@@ -1385,15 +1388,22 @@ def update_current_user(current_user):
         updated_fields = []
         
         # Update profile fields
+        # Note: 'name' field is read-only (from Google OAuth), use 'display_name' instead
         if 'name' in data:
-            name = data['name'].strip()
-            if not name:
-                return jsonify({'error': 'Name cannot be empty'}), 400
-            if len(name) > 255:
-                return jsonify({'error': 'Name too long (max 255 characters)'}), 400
-            old_name = current_user.name
-            current_user.name = name
-            updated_fields.append(f"name: '{old_name}' -> '{name}'")
+            return jsonify({
+                'error': 'Name field is read-only', 
+                'message': 'Name comes from Google account. Use display_name field instead.'
+            }), 400
+            
+        if 'display_name' in data:
+            display_name = data['display_name'].strip()
+            if not display_name:
+                return jsonify({'error': 'Display name cannot be empty'}), 400
+            if len(display_name) > 255:
+                return jsonify({'error': 'Display name too long (max 255 characters)'}), 400
+            old_display_name = current_user.display_name
+            current_user.display_name = display_name
+            updated_fields.append(f"display_name: '{old_display_name}' -> '{display_name}'")
             
         if 'phone' in data:
             phone = data['phone'].strip() if data['phone'] else ''
