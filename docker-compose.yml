@@ -67,9 +67,9 @@ services:
       # Nginx configuration
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       # Let's Encrypt certificates (read-only)
-      - letsencrypt-certs:/etc/letsencrypt:ro
+      - letsencrypt-certs:/etc/letsencrypt
       # Webroot for ACME challenges
-      - letsencrypt-webroot:/var/www/certbot:ro
+      - letsencrypt-webroot:/var/www/certbot
     depends_on:
       backend:
         condition: service_healthy
