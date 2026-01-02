@@ -1,8 +1,9 @@
-# CivicFix Backend - Production Docker Compose
+# CivicFix Backend - Production Docker Compose with Let's Encrypt HTTPS
 # Uses Supabase for authentication, AWS RDS for database, AWS S3 for file storage
+# HTTPS handled by Certbot (Let's Encrypt) - Flask runs on localhost:5000 only
 
 services:
-  # CivicFix Backend
+  # CivicFix Backend - Flask Application
   backend:
     build:
       context: .
@@ -10,7 +11,8 @@ services:
     container_name: civicfix-backend
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      # Bind to localhost only - NOT exposed publicly
+      - "127.0.0.1:5000:5000"
     environment:
       # Flask Configuration (Required)
       - FLASK_ENV=${FLASK_ENV:-production}
@@ -29,13 +31,13 @@ services:
       # Supabase Authentication (Required)
       - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
       
-      # Docker Configuration (Skip validation by default for reliable startup)
+      # Docker Configuration
       - SKIP_VALIDATION=${SKIP_VALIDATION:-false}
       - SKIP_AUTH_TEST=${SKIP_AUTH_TEST:-false}
       - RUN_MIGRATION=${RUN_MIGRATION:-true}
       
-      # Optional Configuration
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # CORS Configuration
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://civicfix-server.asolvitra.tech}
       
       # Python Configuration
       - PYTHONDONTWRITEBYTECODE=1
@@ -49,27 +51,25 @@ services:
     volumes:
       # Mount .env file if it exists (optional)
       - ./.env:/app/.env:ro
+      # Mount webroot for Let's Encrypt challenges
+      - letsencrypt-webroot:/app/static/.well-known
     networks:
       - civicfix-network
 
-  # Nginx Reverse Proxy (Optional)
-  nginx:
-    image: nginx:alpine
-    container_name: civicfix-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+  # Certbot - Let's Encrypt SSL Certificate Management
+  certbot:
+    image: certbot/certbot:latest
+    container_name: civicfix-certbot
     volumes:
-      - ./nginx-clean.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      # Persistent certificate storage
+      - letsencrypt-certs:/etc/letsencrypt
+      - letsencrypt-webroot:/var/www/certbot
+      # Log storage for debugging
+      - letsencrypt-logs:/var/log/letsencrypt
+    # Run certbot in webroot mode (manual execution required)
+    command: >
+      sh -c "echo 'Certbot container ready. Run certificate generation manually.' && 
+             tail -f /dev/null"
     networks:
       - civicfix-network
 
@@ -77,4 +77,13 @@ networks:
   civicfix-network:
     driver: bridge
 
-# No persistent volumes needed - using AWS RDS and S3
+volumes:
+  # Persistent Let's Encrypt certificate storage
+  letsencrypt-certs:
+    driver: local
+  # Webroot for ACME challenges
+  letsencrypt-webroot:
+    driver: local
+  # Certificate generation logs
+  letsencrypt-logs:
+    driver: local
