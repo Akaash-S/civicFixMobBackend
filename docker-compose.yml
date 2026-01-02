@@ -86,6 +86,7 @@ services:
   certbot:
     image: certbot/certbot:latest
     container_name: civicfix-certbot
+    entrypoint: /bin/sh
     volumes:
       # Persistent certificate storage
       - letsencrypt-certs:/etc/letsencrypt
