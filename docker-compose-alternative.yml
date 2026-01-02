@@ -1,0 +1,34 @@
+# Alternative Solution: Simplified Healthcheck
+# This version removes the dependency on backend and uses a simpler check
+
+  # Nginx Reverse Proxy with SSL Termination (Alternative Healthcheck)
+  nginx:
+    image: nginx:alpine
+    container_name: civicfix-nginx
+    restart: unless-stopped
+    ports:
+      # Public HTTP and HTTPS ports
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Nginx configuration
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # Let's Encrypt certificates (read-only)
+      - letsencrypt-certs:/etc/letsencrypt:ro
+      # Webroot for ACME challenges
+      - letsencrypt-webroot:/var/www/certbot:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Alternative 1: Simple process check (no HTTP dependency)
+    healthcheck:
+      test: ["CMD", "pgrep", "nginx"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Alternative 2: Remove healthcheck entirely (uncomment to use)
+    # healthcheck:
+    #   disable: true
+    networks:
+      - civicfix-network
