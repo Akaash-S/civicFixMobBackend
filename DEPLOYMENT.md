@@ -64,3 +64,26 @@ Use this checklist to verify your production deployment.
   docker compose run --rm certbot renew
   docker compose exec nginx nginx -s reload
   ```
+
+## 5. Troubleshooting
+
+### "Container is restarting" Error
+If you see `Error response from daemon: Container ... is restarting`, it means Nginx is failing to start, usually because **HTTPS certificates are missing**.
+
+**Solution:**
+Nginx cannot start in HTTPS mode without certificates, but you need running Nginx to get certificates.
+
+1. **Run the Setup Script in Git Bash/Terminal**:
+   ```bash
+   chmod +x setup-letsencrypt.sh
+   ./setup-letsencrypt.sh
+   ```
+
+2. **Manual Fix (if script fails)**:
+   - Create `nginx-http.conf` (HTTP only).
+   - Edit `docker-compose.yml` to mount `nginx-http.conf` instead of `nginx-https.conf`.
+   - `docker compose up -d nginx`
+   - Run the Certbot command from step 2 above.
+   - Revert `docker-compose.yml` to use `nginx-https.conf`.
+   - `docker compose restart nginx`
+
