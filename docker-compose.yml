@@ -96,7 +96,7 @@ services:
       - letsencrypt-logs:/var/log/letsencrypt
     # Keep container running for manual certificate operations
     command: >
-      sh -c "echo 'Certbot container ready for certificate management.' && 
+      -c "echo 'Certbot container ready for certificate management.' && 
              tail -f /dev/null"
     networks:
       - civicfix-network
