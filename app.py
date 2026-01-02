@@ -851,17 +851,6 @@ def health():
         }
     })
 
-@app.route('/.well-known/acme-challenge/<path:challenge>')
-def letsencrypt_challenge(challenge):
-    """Serve Let's Encrypt ACME challenge files for SSL certificate generation"""
-    try:
-        from flask import send_from_directory
-        # Serve challenge files from the mounted webroot volume
-        return send_from_directory('/app/static/.well-known/acme-challenge', challenge)
-    except Exception as e:
-        logger.error(f"Let's Encrypt challenge error: {str(e)}")
-        return "Challenge file not found", 404
-
 
 
 # ================================

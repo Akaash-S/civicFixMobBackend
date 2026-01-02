@@ -1,18 +1,18 @@
-# CivicFix Backend - Production Docker Compose with Let's Encrypt HTTPS
+# CivicFix Backend - Production Docker Compose with Nginx + Let's Encrypt HTTPS
 # Uses Supabase for authentication, AWS RDS for database, AWS S3 for file storage
-# HTTPS handled by Certbot (Let's Encrypt) - Flask runs on localhost:5000 only
+# Nginx reverse proxy with SSL termination, Flask backend private
 
 services:
-  # CivicFix Backend - Flask Application
+  # CivicFix Backend - Flask Application (Private)
   backend:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: civicfix-backend
     restart: unless-stopped
-    ports:
-      # Bind to localhost only - NOT exposed publicly
-      - "127.0.0.1:5000:5000"
+    expose:
+      # Expose to Docker network only - NOT to host
+      - "5000"
     environment:
       # Flask Configuration (Required)
       - FLASK_ENV=${FLASK_ENV:-production}
@@ -51,8 +51,34 @@ services:
     volumes:
       # Mount .env file if it exists (optional)
       - ./.env:/app/.env:ro
-      # Mount webroot for Let's Encrypt challenges
-      - letsencrypt-webroot:/app/static/.well-known
+    networks:
+      - civicfix-network
+
+  # Nginx Reverse Proxy with SSL Termination
+  nginx:
+    image: nginx:alpine
+    container_name: civicfix-nginx
+    restart: unless-stopped
+    ports:
+      # Public HTTP and HTTPS ports
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Nginx configuration
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # Let's Encrypt certificates (read-only)
+      - letsencrypt-certs:/etc/letsencrypt:ro
+      # Webroot for ACME challenges
+      - letsencrypt-webroot:/var/www/certbot:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks:
       - civicfix-network
 
@@ -63,12 +89,13 @@ services:
     volumes:
       # Persistent certificate storage
       - letsencrypt-certs:/etc/letsencrypt
+      # Webroot for ACME challenges
       - letsencrypt-webroot:/var/www/certbot
       # Log storage for debugging
       - letsencrypt-logs:/var/log/letsencrypt
-    # Run certbot in webroot mode (manual execution required)
+    # Keep container running for manual certificate operations
     command: >
-      sh -c "echo 'Certbot container ready. Run certificate generation manually.' && 
+      sh -c "echo 'Certbot container ready for certificate management.' && 
              tail -f /dev/null"
     networks:
       - civicfix-network
