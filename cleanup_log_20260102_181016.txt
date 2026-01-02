@@ -1,0 +1,7 @@
+CivicFix AWS Data Cleanup Log
+==================================================
+Timestamp: 2026-01-02T18:10:16.330177
+Database: civicfix-db.ctousuwme9up.ap-south-1.rds.amazonaws.com:5432/civicfix-db
+S3 Bucket: civicfix-media-uploads
+AWS Region: ap-south-1
+

@@ -306,6 +306,7 @@ class Comment(db.Model):
             'issue_id': self.issue_id,
             'user_id': self.user_id,
             'user_name': self.user.name if self.user else None,
+            'user_display_name': self.user.display_name if self.user else None,
             'user_photo': self.user.photo_url if self.user else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.created_at.isoformat() if self.created_at else None  # Use created_at for both
@@ -1932,15 +1933,18 @@ def get_stats():
 def get_categories():
     """Get available issue categories"""
     categories = [
-        'Pothole',
-        'Street Light',
-        'Garbage Collection',
-        'Traffic Signal',
-        'Road Damage',
-        'Water Leak',
-        'Sidewalk Issue',
-        'Graffiti',
-        'Noise Complaint',
+        'Road Infrastructure',
+        'Water & Drainage',
+        'Street Lighting',
+        'Waste Management',
+        'Traffic & Transportation',
+        'Public Safety',
+        'Parks & Recreation',
+        'Utilities & Power',
+        'Building & Construction',
+        'Environmental Issues',
+        'Public Health',
+        'Community Services',
         'Other'
     ]
     return jsonify({'categories': categories})
@@ -1990,6 +1994,98 @@ def get_status_options():
         {'value': 'REJECTED', 'label': 'Rejected', 'description': 'Issue was rejected or invalid'}
     ]
     return jsonify({'statuses': statuses})
+
+# ================================
+# Upvote Routes
+# ================================
+
+@app.route('/api/v1/issues/<int:issue_id>/upvote', methods=['POST'])
+@require_auth
+def upvote_issue(current_user, issue_id):
+    """Upvote an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Check if user already upvoted (we'll need to create a table for this)
+        # For now, we'll just increment the upvotes count
+        issue.upvotes += 1
+        db.session.commit()
+        
+        logger.info(f"Issue {issue_id} upvoted by user {current_user.email}")
+        
+        return jsonify({
+            'message': 'Issue upvoted successfully',
+            'upvotes': issue.upvotes
+        })
+        
+    except Exception as e:
+        logger.error(f"Error upvoting issue: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>/upvote', methods=['DELETE'])
+@require_auth
+def remove_upvote(current_user, issue_id):
+    """Remove upvote from an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Prevent negative upvotes
+        if issue.upvotes > 0:
+            issue.upvotes -= 1
+        
+        db.session.commit()
+        
+        logger.info(f"Upvote removed from issue {issue_id} by user {current_user.email}")
+        
+        return jsonify({
+            'message': 'Upvote removed successfully',
+            'upvotes': issue.upvotes
+        })
+        
+    except Exception as e:
+        logger.error(f"Error removing upvote: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>/upvotes', methods=['GET'])
+def get_issue_upvotes(issue_id):
+    """Get upvote count and user's upvote status for an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # For now, we'll return false for user_upvoted since we don't have the tracking table yet
+        # In a full implementation, you'd check if the current user has upvoted this issue
+        user_upvoted = False
+        
+        return jsonify({
+            'upvotes': issue.upvotes,
+            'user_upvoted': user_upvoted
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting upvotes: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/users/<int:user_id>/profile', methods=['GET'])
+def get_user_profile(user_id):
+    """Get user profile information"""
+    try:
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        return jsonify({'user': user.to_dict()})
+        
+    except Exception as e:
+        logger.error(f"Error getting user profile: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
 # Comment Routes
