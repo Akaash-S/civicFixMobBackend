@@ -73,7 +73,7 @@ def test_backend_jwt_verification(token):
     
     try:
         # Test with users/me endpoint
-        response = requests.get("http://3.110.42.224:80/api/v1/users/me", headers=headers)
+        response = requests.get("https://civicfix-server.asolvitra.tech/api/v1/users/me", headers=headers)
         
         print(f"Status: {response.status_code}")
         print(f"Response: {response.text}")

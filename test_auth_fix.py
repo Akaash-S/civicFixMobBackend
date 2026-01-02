@@ -16,7 +16,7 @@ load_dotenv()
 def test_auth_fix():
     """Test that the authentication fix works"""
     
-    backend_url = "http://3.110.42.224:80"
+    backend_url = "https://civicfix-server.asolvitra.tech"
     jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
     
     print("🧪 Testing Authentication Fix")

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-BASE_URL = "http://3.110.42.224:80"
+BASE_URL = "https://civicfix-server.asolvitra.tech"
 
 def test_multiple_jwt_secrets():
     """Test with different possible JWT secrets"""

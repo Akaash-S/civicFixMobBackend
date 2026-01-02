@@ -9,7 +9,7 @@ import jwt
 import time
 
 # Configuration
-BASE_URL = "http://3.110.42.224:80"
+BASE_URL = "https://civicfix-server.asolvitra.tech"
 JWT_SECRET = "sb_secret_etWJpQeFCiW8bzj12DyUiw_y2N-1cQE"
 
 def create_test_token():

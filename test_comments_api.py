@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 
 # Configuration
-BASE_URL = "http://3.110.42.224:80"  # Production server
+BASE_URL = "https://civicfix-server.asolvitra.tech"  # Production server
 JWT_SECRET = "sb_secret_etWJpQeFCiW8bzj12DyUiw_y2N-1cQE"
 
 def create_test_token():

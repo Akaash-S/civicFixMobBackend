@@ -40,7 +40,7 @@ def test_header_preservation():
     print("=" * 50)
     
     token = create_test_token()
-    nginx_url = "http://3.110.42.224:80"
+    nginx_url = "https://civicfix-server.asolvitra.tech"
     
     # Test cases with different header formats
     test_cases = [

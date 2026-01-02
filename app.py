@@ -1150,9 +1150,83 @@ def upload_issue_media(current_user):
         logger.error(f"Error uploading issue media: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
-# ================================
-# Issue Routes
-# ================================
+@app.route('/api/v1/upload/video', methods=['POST'])
+@require_auth
+def upload_video(current_user):
+    """Upload video file to S3 - optimized for video recorder"""
+    try:
+        if not s3_service:
+            return jsonify({'error': 'Video upload service not available'}), 503
+            
+        if 'file' not in request.files:
+            return jsonify({'error': 'No video file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No video file selected'}), 400
+        
+        # Validate video file type
+        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp', 'm4v'}
+        file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+        
+        if file_extension not in video_extensions:
+            return jsonify({
+                'error': f'Invalid video format. Supported formats: {", ".join(sorted(video_extensions))}'
+            }), 400
+        
+        # Validate video file size (100MB limit for videos)
+        file.seek(0, 2)  # Seek to end
+        file_size = file.tell()
+        file.seek(0)  # Reset to beginning
+        
+        max_video_size = 100 * 1024 * 1024  # 100MB for videos
+        
+        if file_size > max_video_size:
+            return jsonify({'error': 'Video file too large. Maximum size: 100MB'}), 400
+        
+        # Generate unique filename with timestamp and user ID
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        unique_filename = f"videos/{current_user.id}/{timestamp}_{secure_filename(file.filename)}"
+        
+        # Set video content type
+        content_type_map = {
+            'mp4': 'video/mp4',
+            'mov': 'video/quicktime',
+            'avi': 'video/x-msvideo',
+            'mkv': 'video/x-matroska',
+            'wmv': 'video/x-ms-wmv',
+            'flv': 'video/x-flv',
+            'webm': 'video/webm',
+            '3gp': 'video/3gpp',
+            'm4v': 'video/x-m4v'
+        }
+        content_type = content_type_map.get(file_extension, 'video/mp4')
+        
+        # Upload to S3
+        file_url = s3_service.upload_file(
+            file, 
+            unique_filename, 
+            content_type=content_type
+        )
+        
+        # Log the upload
+        logger.info(f"Video uploaded successfully: {unique_filename} ({file_size} bytes) by user {current_user.id}")
+        
+        return jsonify({
+            'message': 'Video uploaded successfully',
+            'file_url': file_url,
+            'file_name': file.filename,
+            'file_size': file_size,
+            'file_type': 'video',
+            'content_type': content_type,
+            'file_extension': file_extension,
+            'upload_timestamp': datetime.utcnow().isoformat(),
+            'user_id': current_user.id
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error uploading video: {e}")
+        return jsonify({'error': 'Video upload failed. Please try again.'}), 500
 
 # ================================
 # Issue Routes

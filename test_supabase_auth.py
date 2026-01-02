@@ -16,7 +16,7 @@ load_dotenv()
 def test_supabase_authentication():
     """Test Supabase authentication end-to-end"""
     
-    backend_url = "http://3.110.42.224:80"
+    backend_url = "https://civicfix-server.asolvitra.tech"
     jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
     
     print("🔐 Testing Supabase Authentication End-to-End")

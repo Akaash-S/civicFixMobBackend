@@ -16,7 +16,7 @@ def test_supabase_token_with_backend():
     """Test that a Supabase-like token works with the backend"""
     
     jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
-    backend_url = "http://3.110.42.224:80"
+    backend_url = "https://civicfix-server.asolvitra.tech"
     
     if not jwt_secret:
         print("❌ SUPABASE_JWT_SECRET not found in environment")

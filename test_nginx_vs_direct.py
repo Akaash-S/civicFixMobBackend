@@ -48,7 +48,7 @@ def compare_nginx_vs_direct():
     print("=" * 60)
     
     # URLs
-    nginx_url = "http://3.110.42.224:80"  # Through nginx
+    nginx_url = "https://civicfix-server.asolvitra.tech"  # Through nginx
     direct_url = "http://3.110.42.224:5000"  # Direct to backend (if accessible)
     
     # Create test token

@@ -7,7 +7,7 @@ import requests
 import json
 
 # Test the deployed backend
-BASE_URL = "http://3.110.42.224:80"
+BASE_URL = "https://civicfix-server.asolvitra.tech"
 API_BASE = f"{BASE_URL}/api/v1"
 
 def test_media_endpoint():

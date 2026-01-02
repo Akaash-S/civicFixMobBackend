@@ -18,7 +18,7 @@ def test_upvotes_in_api():
     
     try:
         # Test the issues endpoint
-        backend_url = "http://3.110.42.224:80"  # Your deployed backend
+        backend_url = "https://civicfix-server.asolvitra.tech"  # Your deployed backend
         
         print(f"📡 Testing API at: {backend_url}")
         

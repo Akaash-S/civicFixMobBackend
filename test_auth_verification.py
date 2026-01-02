@@ -16,7 +16,7 @@ load_dotenv()
 
 class AuthVerificationTest:
     def __init__(self):
-        self.backend_url = "http://3.110.42.224:80" #"http://3.110.42.224:80"
+        self.backend_url = "https://civicfix-server.asolvitra.tech" #"https://civicfix-server.asolvitra.tech"
         self.jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
         self.test_results = []
         self.passed_tests = 0
@@ -430,7 +430,7 @@ def main():
     
     if not success:
         print("If tests failed, check:")
-        print("1. Server is running: curl http://3.110.42.224:80/health")
+        print("1. Server is running: curl https://civicfix-server.asolvitra.tech/health")
         print("2. SUPABASE_JWT_SECRET is set on server")
         print("3. Backend code is deployed: version should be 3.0.0-supabase")
         print("4. Docker containers are running: docker-compose ps")

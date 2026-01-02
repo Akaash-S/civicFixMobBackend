@@ -15,7 +15,7 @@ load_dotenv()
 def test_es256_token():
     """Test ES256 token handling"""
     
-    backend_url = "http://3.110.42.224:80"
+    backend_url = "https://civicfix-server.asolvitra.tech"
     
     print("🔍 Testing ES256 Token Handling")
     print("=" * 50)

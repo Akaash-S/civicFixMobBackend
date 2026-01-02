@@ -15,7 +15,7 @@ load_dotenv()
 def test_server_jwt_secret():
     """Test different JWT secrets to see which one the server accepts"""
     
-    backend_url = "http://3.110.42.224:80"
+    backend_url = "https://civicfix-server.asolvitra.tech"
     local_secret = os.environ.get('SUPABASE_JWT_SECRET')
     
     print("🔍 Testing Server JWT Secret")

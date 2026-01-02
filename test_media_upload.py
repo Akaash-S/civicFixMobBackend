@@ -9,7 +9,7 @@ import os
 from io import BytesIO
 
 # Configuration
-BASE_URL =  "http://localhost:5000" #"http://3.110.42.224:80"  # Production backend URL
+BASE_URL =  "http://localhost:5000" #"https://civicfix-server.asolvitra.tech"  # Production backend URL
 API_BASE = f"{BASE_URL}/api/v1"
 
 # Test authentication token (you'll need to get this from your app)

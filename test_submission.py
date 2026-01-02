@@ -10,7 +10,7 @@ import base64
 import time
 
 # Configuration
-BASE_URL = "http://localhost:5000" #"http://3.110.42.224:80"
+BASE_URL = "http://localhost:5000" #"https://civicfix-server.asolvitra.tech"
 TEST_USER_DATA = {
     "user_id": "test_user_123",
     "email": "test@example.com",

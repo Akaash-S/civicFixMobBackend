@@ -8,7 +8,7 @@ import json
 
 def test_backend_endpoints():
     """Test various backend endpoints to check deployment status"""
-    base_url = "http://3.110.42.224:80"
+    base_url = "https://civicfix-server.asolvitra.tech"
     
     print("🔍 Testing Backend Deployment Status")
     print("=" * 50)

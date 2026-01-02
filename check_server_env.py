@@ -11,7 +11,7 @@ def check_server_config():
     print("🔍 Checking Server Configuration")
     print("=" * 40)
     
-    base_url = "http://3.110.42.224:80"
+    base_url = "https://civicfix-server.asolvitra.tech"
     
     # Test health endpoint to see what's configured
     try:

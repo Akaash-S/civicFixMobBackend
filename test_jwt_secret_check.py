@@ -70,7 +70,7 @@ def test_different_secrets():
         token = jwt.encode(payload, jwt_secret, algorithm='HS256')
         
         headers = {"Authorization": f"Bearer {token}"}
-        response = requests.get("http://3.110.42.224:80/api/v1/users/me", headers=headers)
+        response = requests.get("https://civicfix-server.asolvitra.tech/api/v1/users/me", headers=headers)
         
         print(f"Status: {response.status_code}")
         print(f"Response: {response.text}")
@@ -105,7 +105,7 @@ def test_simple_custom_token():
     custom_token = base64.b64encode(json.dumps(token_data).encode()).decode()
     
     headers = {"Authorization": f"Bearer {custom_token}"}
-    response = requests.get("http://3.110.42.224:80/api/v1/users/me", headers=headers)
+    response = requests.get("https://civicfix-server.asolvitra.tech/api/v1/users/me", headers=headers)
     
     print(f"Custom token status: {response.status_code}")
     print(f"Custom token response: {response.text}")

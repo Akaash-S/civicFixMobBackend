@@ -16,7 +16,7 @@ def debug_jwt_verification():
     """Debug the JWT verification process step by step"""
     
     jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
-    backend_url = "http://3.110.42.224:80"
+    backend_url = "https://civicfix-server.asolvitra.tech"
     
     print("🔍 JWT Verification Debug")
     print("=" * 50)

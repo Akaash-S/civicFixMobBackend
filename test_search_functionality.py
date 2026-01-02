@@ -7,7 +7,7 @@ import requests
 import json
 
 # Configuration
-BASE_URL = "http://3.110.42.224:80"  # Production backend URL
+BASE_URL = "https://civicfix-server.asolvitra.tech"  # Production backend URL
 API_BASE = f"{BASE_URL}/api/v1"
 
 def test_search_functionality():

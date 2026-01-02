@@ -13,7 +13,7 @@ from datetime import datetime
 def validate_deployment():
     """Validate the deployed authentication system"""
     
-    production_url = "http://3.110.42.224:80"
+    production_url = "https://civicfix-server.asolvitra.tech"
     
     print("🚀 CivicFix Deployment Validation")
     print("=" * 50)
