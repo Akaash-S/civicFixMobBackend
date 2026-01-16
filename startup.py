@@ -146,9 +146,6 @@ def start_app():
             # Use gunicorn
             import subprocess
             
-            # Determine which module to use
-            module_name = 'app_new:app' if 'app_new' in sys.modules else 'app:app'
-            
             subprocess.run([
                 'gunicorn',
                 '--bind', f'0.0.0.0:{port}',
@@ -156,7 +153,7 @@ def start_app():
                 '--timeout', '120',
                 '--access-logfile', '-',
                 '--error-logfile', '-',
-                module_name
+                'app:app'
             ])
             
     except Exception as e:

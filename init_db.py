@@ -23,7 +23,7 @@ def init_database():
     """Initialize database with all tables and indexes"""
     try:
         # Import app and db after environment is loaded
-        from app_new import app, db
+        from app import app, db
         
         logger.info("=" * 60)
         logger.info("CivicFix Database Initialization")
