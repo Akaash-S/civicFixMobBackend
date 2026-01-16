@@ -10,9 +10,13 @@ Flask-CORS==4.0.0
 psycopg2-binary==2.9.9
 
 # Supabase Storage Client (with compatible versions)
+# IMPORTANT: These specific versions are required to avoid proxy parameter error
 supabase==2.3.0
 storage3==0.7.0
 httpx==0.24.1
+gotrue==1.3.0
+postgrest==0.13.2
+realtime==1.0.5
 
 # WebSockets (required by Supabase realtime)
 websockets==12.0

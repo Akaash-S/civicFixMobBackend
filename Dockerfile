@@ -23,7 +23,8 @@ WORKDIR /app
 # Copy requirements and install dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip list | grep -E "supabase|storage3|httpx|gotrue"
 
 # Copy application files
 COPY app.py .
