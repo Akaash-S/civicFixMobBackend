@@ -98,23 +98,23 @@ print_header "Step 2: DNS Verification"
 
 print_info "Checking DNS resolution for $DOMAIN..."
 
-if nslookup $DOMAIN > /dev/null 2>&1; then
-    RESOLVED_IP=$(nslookup $DOMAIN | grep -A1 "Name:" | grep "Address:" | awk '{print $2}' | head -1)
-    if [ -z "$RESOLVED_IP" ]; then
-        RESOLVED_IP=$(dig +short $DOMAIN | head -1)
-    fi
-    
-    if [ -n "$RESOLVED_IP" ]; then
-        print_success "Domain resolves to: $RESOLVED_IP"
-    else
-        print_warning "Could not determine resolved IP"
-    fi
+# Try to get IP from nslookup
+RESOLVED_IP=$(nslookup $DOMAIN 2>/dev/null | grep -i "Address:" | grep -v "#" | tail -1 | awk '{print $2}')
+
+# If nslookup didn't work, try dig
+if [ -z "$RESOLVED_IP" ]; then
+    RESOLVED_IP=$(dig +short $DOMAIN 2>/dev/null | head -1)
+fi
+
+# If we got an IP, DNS is working
+if [ -n "$RESOLVED_IP" ] && [[ "$RESOLVED_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    print_success "Domain resolves to: $RESOLVED_IP"
 else
     print_error "Domain does not resolve!"
     print_info "Please configure DNS A record:"
     print_info "  Type: A"
-    print_info "  Name: @"
-    print_info "  Value: $(curl -s http://checkip.amazonaws.com)"
+    print_info "  Name: civicfix-server"
+    print_info "  Value: $(curl -s http://checkip.amazonaws.com 2>/dev/null || echo 'YOUR_VM_IP')"
     print_info "  TTL: 3600"
     echo ""
     read -p "Continue anyway? (y/n): " CONTINUE_DNS
