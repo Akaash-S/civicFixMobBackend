@@ -995,6 +995,709 @@ def update_user_settings(current_user):
         return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
+# Authentication Endpoints
+# ================================
+
+@app.route('/api/v1/auth/google', methods=['POST'])
+def authenticate_google():
+    """Authenticate user with Google OAuth"""
+    try:
+        data = request.get_json()
+        id_token = data.get('id_token')
+        
+        if not id_token:
+            return jsonify({'error': 'ID token is required'}), 400
+        
+        # Verify the token with Supabase
+        token_data = verify_supabase_token(id_token)
+        if not token_data:
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        # Sync user to database
+        user = sync_user_to_database(token_data)
+        if not user:
+            return jsonify({'error': 'Failed to sync user'}), 500
+        
+        return jsonify({
+            'message': 'Authentication successful',
+            'user': user.to_dict(),
+            'token': id_token
+        })
+    except Exception as e:
+        logger.error(f"Error authenticating with Google: {e}")
+        return jsonify({'error': 'Authentication failed'}), 500
+
+@app.route('/api/v1/auth/test', methods=['GET'])
+@require_auth
+def test_auth(current_user):
+    """Test authentication endpoint"""
+    return jsonify({
+        'message': 'Authentication successful',
+        'user': current_user.to_dict(),
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+@app.route('/api/v1/debug/auth', methods=['GET'])
+@require_auth
+def debug_auth(current_user):
+    """Debug authentication endpoint"""
+    return jsonify({
+        'message': 'Debug authentication',
+        'user': current_user.to_dict(),
+        'token_present': bool(request.headers.get('Authorization')),
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+# ================================
+# Onboarding Endpoints
+# ================================
+
+@app.route('/api/v1/onboarding/password', methods=['POST'])
+@require_auth
+def set_onboarding_password(current_user):
+    """Set password during onboarding"""
+    try:
+        data = request.get_json()
+        password = data.get('password')
+        
+        if not password:
+            return jsonify({'error': 'Password is required'}), 400
+        
+        if len(password) < 8:
+            return jsonify({'error': 'Password must be at least 8 characters'}), 400
+        
+        # Hash and store password (for local auth if needed)
+        current_user.password_hash = hash_password(password)
+        current_user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Password set successfully',
+            'user': current_user.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Error setting onboarding password: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/onboarding/language', methods=['POST'])
+@require_auth
+def set_onboarding_language(current_user):
+    """Set language during onboarding"""
+    try:
+        data = request.get_json()
+        language = data.get('language')
+        
+        if not language:
+            return jsonify({'error': 'Language is required'}), 400
+        
+        current_user.language = language
+        current_user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Language set successfully',
+            'user': current_user.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Error setting onboarding language: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/onboarding/complete', methods=['POST'])
+@require_auth
+def complete_onboarding(current_user):
+    """Complete onboarding process"""
+    try:
+        current_user.onboarding_completed = True
+        current_user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Onboarding completed successfully',
+            'user': current_user.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Error completing onboarding: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# User Profile Endpoints
+# ================================
+
+@app.route('/api/v1/users/me/password', methods=['PUT'])
+@require_auth
+def change_password(current_user):
+    """Change user password"""
+    try:
+        data = request.get_json()
+        current_password = data.get('current_password')
+        new_password = data.get('new_password')
+        
+        if not current_password or not new_password:
+            return jsonify({'error': 'Current and new password are required'}), 400
+        
+        if len(new_password) < 8:
+            return jsonify({'error': 'New password must be at least 8 characters'}), 400
+        
+        # Verify current password
+        if current_user.password_hash:
+            if not verify_password(current_password, current_user.password_hash):
+                return jsonify({'error': 'Current password is incorrect'}), 401
+        
+        # Set new password
+        current_user.password_hash = hash_password(new_password)
+        current_user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Password changed successfully',
+            'instructions': 'Please use your new password for future logins',
+            'supabase_method': 'Password updated in local database'
+        })
+    except Exception as e:
+        logger.error(f"Error changing password: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/users/<int:user_id>/issues', methods=['GET'])
+def get_user_issues(user_id):
+    """Get issues created by a specific user"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        
+        # Query issues by user
+        query = Issue.query.filter_by(created_by=user_id).order_by(Issue.created_at.desc())
+        
+        # Paginate
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        
+        issues = [{
+            **issue.to_dict(),
+            'creator_name': issue.creator.name if issue.creator else 'Unknown'
+        } for issue in pagination.items]
+        
+        return jsonify({
+            'issues': issues,
+            'pagination': {
+                'page': pagination.page,
+                'per_page': pagination.per_page,
+                'total': pagination.total,
+                'pages': pagination.pages,
+                'has_next': pagination.has_next,
+                'has_prev': pagination.has_prev
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting user issues: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/users/<int:user_id>/profile', methods=['GET'])
+def get_user_profile(user_id):
+    """Get user profile"""
+    try:
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        return jsonify({'user': user.to_dict()})
+    except Exception as e:
+        logger.error(f"Error getting user profile: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# Issue CRUD Endpoints
+# ================================
+
+@app.route('/api/v1/issues/<int:issue_id>', methods=['PUT'])
+@require_auth
+def update_issue(current_user, issue_id):
+    """Update an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Check if user owns the issue
+        if issue.created_by != current_user.id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        data = request.get_json()
+        
+        if 'title' in data:
+            issue.title = data['title']
+        if 'description' in data:
+            issue.description = data['description']
+        if 'category' in data:
+            issue.category = data['category']
+        if 'priority' in data:
+            issue.priority = data['priority']
+        if 'address' in data:
+            issue.address = data['address']
+        if 'image_urls' in data:
+            issue.image_urls = json.dumps(data['image_urls'])
+        
+        issue.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Issue updated successfully',
+            'issue': issue.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Error updating issue: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>', methods=['DELETE'])
+@require_auth
+def delete_issue(current_user, issue_id):
+    """Delete an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Check if user owns the issue
+        if issue.created_by != current_user.id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        db.session.delete(issue)
+        db.session.commit()
+        
+        return jsonify({'message': 'Issue deleted successfully'})
+    except Exception as e:
+        logger.error(f"Error deleting issue: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>/status', methods=['PUT'])
+@require_auth
+def update_issue_status(current_user, issue_id):
+    """Update issue status"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        data = request.get_json()
+        status = data.get('status')
+        
+        if not status:
+            return jsonify({'error': 'Status is required'}), 400
+        
+        valid_statuses = ['open', 'in_progress', 'resolved', 'closed']
+        if status not in valid_statuses:
+            return jsonify({'error': f'Invalid status. Must be one of: {", ".join(valid_statuses)}'}), 400
+        
+        issue.status = status
+        issue.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Issue status updated successfully',
+            'issue': issue.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Error updating issue status: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/nearby', methods=['GET'])
+def get_nearby_issues():
+    """Get issues near a location"""
+    try:
+        latitude = request.args.get('latitude', type=float)
+        longitude = request.args.get('longitude', type=float)
+        radius = request.args.get('radius', 5.0, type=float)  # km
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        
+        if latitude is None or longitude is None:
+            return jsonify({'error': 'Latitude and longitude are required'}), 400
+        
+        # Simple distance calculation (Haversine formula would be more accurate)
+        # For now, use a bounding box
+        lat_range = radius / 111.0  # 1 degree latitude ≈ 111 km
+        lon_range = radius / (111.0 * abs(latitude / 90.0))  # Adjust for latitude
+        
+        query = Issue.query.filter(
+            Issue.latitude.between(latitude - lat_range, latitude + lat_range),
+            Issue.longitude.between(longitude - lon_range, longitude + lon_range)
+        ).order_by(Issue.created_at.desc())
+        
+        # Paginate
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        
+        issues = [{
+            **issue.to_dict(),
+            'creator_name': issue.creator.name if issue.creator else 'Unknown'
+        } for issue in pagination.items]
+        
+        return jsonify({
+            'issues': issues,
+            'pagination': {
+                'page': pagination.page,
+                'per_page': pagination.per_page,
+                'total': pagination.total,
+                'pages': pagination.pages,
+                'has_next': pagination.has_next,
+                'has_prev': pagination.has_prev
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting nearby issues: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# Upvote Endpoints
+# ================================
+
+@app.route('/api/v1/issues/<int:issue_id>/upvote', methods=['DELETE'])
+@require_auth
+def remove_upvote(current_user, issue_id):
+    """Remove upvote from an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Decrement upvotes (in a real app, track individual upvotes in a separate table)
+        if issue.upvotes > 0:
+            issue.upvotes -= 1
+            issue.updated_at = datetime.utcnow()
+            db.session.commit()
+        
+        return jsonify({
+            'message': 'Upvote removed',
+            'upvotes': issue.upvotes
+        })
+    except Exception as e:
+        logger.error(f"Error removing upvote: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>/upvotes', methods=['GET'])
+def get_issue_upvotes(issue_id):
+    """Get upvote information for an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # In a real app, check if current user has upvoted
+        # For now, return basic info
+        return jsonify({
+            'upvotes': issue.upvotes,
+            'user_upvoted': False  # Would check against upvotes table
+        })
+    except Exception as e:
+        logger.error(f"Error getting upvotes: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# Comment Endpoints
+# ================================
+
+@app.route('/api/v1/issues/<int:issue_id>/comments', methods=['GET'])
+def get_issue_comments(issue_id):
+    """Get comments for an issue"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        
+        # Check if issue exists
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Query comments
+        query = Comment.query.filter_by(issue_id=issue_id).order_by(Comment.created_at.desc())
+        
+        # Paginate
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        
+        comments = [{
+            **comment.to_dict(),
+            'user_name': comment.user.name if comment.user else 'Unknown',
+            'user_photo': comment.user.photo_url if comment.user else None,
+            'user_display_name': comment.user.display_name if comment.user else None
+        } for comment in pagination.items]
+        
+        return jsonify({
+            'comments': comments,
+            'pagination': {
+                'page': pagination.page,
+                'per_page': pagination.per_page,
+                'total': pagination.total,
+                'pages': pagination.pages,
+                'has_next': pagination.has_next,
+                'has_prev': pagination.has_prev
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting comments: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>/comments', methods=['POST'])
+@require_auth
+def create_comment(current_user, issue_id):
+    """Create a comment on an issue"""
+    try:
+        # Check if issue exists
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        data = request.get_json()
+        content = data.get('content')
+        
+        if not content:
+            return jsonify({'error': 'Content is required'}), 400
+        
+        if len(content) > 1000:
+            return jsonify({'error': 'Content must be less than 1000 characters'}), 400
+        
+        # Create comment
+        comment = Comment(
+            content=content,
+            issue_id=issue_id,
+            user_id=current_user.id
+        )
+        
+        db.session.add(comment)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Comment created successfully',
+            'comment': {
+                **comment.to_dict(),
+                'user_name': current_user.name,
+                'user_photo': current_user.photo_url,
+                'user_display_name': current_user.display_name
+            }
+        }), 201
+    except Exception as e:
+        logger.error(f"Error creating comment: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/comments/<int:comment_id>', methods=['PUT'])
+@require_auth
+def update_comment(current_user, comment_id):
+    """Update a comment"""
+    try:
+        comment = Comment.query.get(comment_id)
+        if not comment:
+            return jsonify({'error': 'Comment not found'}), 404
+        
+        # Check if user owns the comment
+        if comment.user_id != current_user.id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        data = request.get_json()
+        content = data.get('content')
+        
+        if not content:
+            return jsonify({'error': 'Content is required'}), 400
+        
+        if len(content) > 1000:
+            return jsonify({'error': 'Content must be less than 1000 characters'}), 400
+        
+        comment.content = content
+        comment.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Comment updated successfully',
+            'comment': {
+                **comment.to_dict(),
+                'user_name': current_user.name,
+                'user_photo': current_user.photo_url,
+                'user_display_name': current_user.display_name
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error updating comment: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/comments/<int:comment_id>', methods=['DELETE'])
+@require_auth
+def delete_comment(current_user, comment_id):
+    """Delete a comment"""
+    try:
+        comment = Comment.query.get(comment_id)
+        if not comment:
+            return jsonify({'error': 'Comment not found'}), 404
+        
+        # Check if user owns the comment
+        if comment.user_id != current_user.id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        db.session.delete(comment)
+        db.session.commit()
+        
+        return jsonify({'message': 'Comment deleted successfully'})
+    except Exception as e:
+        logger.error(f"Error deleting comment: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# Upload Endpoints
+# ================================
+
+@app.route('/api/v1/upload/multiple', methods=['POST'])
+@require_auth
+def upload_multiple_files(current_user):
+    """Upload multiple files to Supabase Storage"""
+    try:
+        if 'files' not in request.files:
+            return jsonify({'error': 'No files provided'}), 400
+        
+        files = request.files.getlist('files')
+        if not files:
+            return jsonify({'error': 'No files provided'}), 400
+        
+        uploaded_files = []
+        errors = []
+        
+        for file in files:
+            try:
+                if file.filename == '':
+                    errors.append('Empty filename')
+                    continue
+                
+                filename = secure_filename(file.filename)
+                unique_filename = f"{uuid.uuid4()}_{filename}"
+                
+                # Upload to Supabase Storage
+                file_data = file.read()
+                storage_service.upload_file(unique_filename, file_data, file.content_type)
+                
+                file_url = storage_service.get_public_url(unique_filename)
+                
+                uploaded_files.append({
+                    'file_url': file_url,
+                    'file_name': filename,
+                    'file_size': len(file_data)
+                })
+            except Exception as e:
+                logger.error(f"Error uploading file {file.filename}: {e}")
+                errors.append(f"Failed to upload {file.filename}")
+        
+        return jsonify({
+            'message': f'Uploaded {len(uploaded_files)} files',
+            'uploaded_files': uploaded_files,
+            'errors': errors
+        })
+    except Exception as e:
+        logger.error(f"Error uploading multiple files: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/upload/video', methods=['POST'])
+@require_auth
+def upload_video(current_user):
+    """Upload video to Supabase Storage"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # Validate video file
+        allowed_video_types = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm']
+        if file.content_type not in allowed_video_types:
+            return jsonify({'error': 'Invalid video format. Allowed: MP4, MOV, AVI, WEBM'}), 400
+        
+        filename = secure_filename(file.filename)
+        unique_filename = f"videos/{uuid.uuid4()}_{filename}"
+        
+        # Upload to Supabase Storage
+        file_data = file.read()
+        storage_service.upload_file(unique_filename, file_data, file.content_type)
+        
+        file_url = storage_service.get_public_url(unique_filename)
+        
+        return jsonify({
+            'message': 'Video uploaded successfully',
+            'file_url': file_url,
+            'file_name': filename,
+            'file_size': len(file_data),
+            'file_type': 'video',
+            'content_type': file.content_type,
+            'file_extension': filename.rsplit('.', 1)[1].lower() if '.' in filename else '',
+            'upload_timestamp': datetime.utcnow().isoformat(),
+            'user_id': current_user.id
+        })
+    except Exception as e:
+        logger.error(f"Error uploading video: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# Utility Endpoints
+# ================================
+
+@app.route('/api/v1/status-options', methods=['GET'])
+def get_status_options():
+    """Get available status options"""
+    return jsonify({
+        'status_options': [
+            {'value': 'open', 'label': 'Open', 'description': 'Issue is reported and awaiting action'},
+            {'value': 'in_progress', 'label': 'In Progress', 'description': 'Issue is being worked on'},
+            {'value': 'resolved', 'label': 'Resolved', 'description': 'Issue has been fixed'},
+            {'value': 'closed', 'label': 'Closed', 'description': 'Issue is closed'}
+        ]
+    })
+
+@app.route('/api/v1/priority-options', methods=['GET'])
+def get_priority_options():
+    """Get available priority options"""
+    return jsonify({
+        'priority_options': [
+            {'value': 'low', 'label': 'Low', 'description': 'Minor issue, can wait'},
+            {'value': 'medium', 'label': 'Medium', 'description': 'Moderate issue, should be addressed'},
+            {'value': 'high', 'label': 'High', 'description': 'Important issue, needs attention'},
+            {'value': 'urgent', 'label': 'Urgent', 'description': 'Critical issue, immediate action required'}
+        ]
+    })
+
+@app.route('/api/v1/stats', methods=['GET'])
+def get_stats():
+    """Get platform statistics"""
+    try:
+        total_issues = Issue.query.count()
+        total_users = User.query.count()
+        
+        # Issues by status
+        issues_by_status = {}
+        for status in ['open', 'in_progress', 'resolved', 'closed']:
+            count = Issue.query.filter_by(status=status).count()
+            issues_by_status[status] = count
+        
+        # Issues by category
+        issues_by_category = {}
+        categories = ['roads', 'water', 'electricity', 'waste', 'public_safety', 'other']
+        for category in categories:
+            count = Issue.query.filter_by(category=category).count()
+            issues_by_category[category] = count
+        
+        return jsonify({
+            'total_issues': total_issues,
+            'total_users': total_users,
+            'issues_by_status': issues_by_status,
+            'issues_by_category': issues_by_category
+        })
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
 # Run Application
 # ================================
 
