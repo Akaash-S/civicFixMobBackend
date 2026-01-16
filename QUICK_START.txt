@@ -1,0 +1,136 @@
+================================================================================
+🚀 CIVICFIX BACKEND - QUICK START
+================================================================================
+
+Domain: civicfix-server.asolvitra.tech
+Status: SSL certificate ready, port 80 conflict needs fixing
+
+================================================================================
+FIX PORT 80 CONFLICT (DO THIS FIRST!)
+================================================================================
+
+sudo systemctl stop nginx
+sudo systemctl disable nginx
+docker-compose down
+docker-compose up -d
+
+================================================================================
+TEST HTTPS
+================================================================================
+
+sleep 10
+curl https://civicfix-server.asolvitra.tech/health
+
+Expected: {"status": "healthy"}
+
+================================================================================
+CHECK STATUS
+================================================================================
+
+docker-compose ps
+
+Expected:
+  civicfix-backend    Up (healthy)
+  civicfix-nginx      Up
+
+================================================================================
+VIEW LOGS
+================================================================================
+
+docker-compose logs -f
+
+Press Ctrl+C to exit
+
+================================================================================
+COMMON COMMANDS
+================================================================================
+
+# Restart services
+docker-compose restart
+
+# Stop services
+docker-compose down
+
+# Start services
+docker-compose up -d
+
+# View backend logs
+docker-compose logs backend
+
+# View nginx logs
+docker-compose logs nginx
+
+# Check certificate
+docker-compose run --rm certbot certificates
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Port 80 still in use?
+  sudo lsof -i :80
+  sudo kill -9 <PID>
+  docker-compose down && docker-compose up -d
+
+HTTPS not working?
+  docker-compose logs nginx
+  docker-compose restart
+
+Certificate issues?
+  docker-compose run --rm certbot certificates
+
+================================================================================
+URLS
+================================================================================
+
+Backend: https://civicfix-server.asolvitra.tech
+API:     https://civicfix-server.asolvitra.tech/api/v1
+Health:  https://civicfix-server.asolvitra.tech/health
+
+================================================================================
+FRONTEND UPDATE
+================================================================================
+
+const API_URL = 'https://civicfix-server.asolvitra.tech';
+
+Or in .env:
+EXPO_PUBLIC_API_URL=https://civicfix-server.asolvitra.tech
+
+================================================================================
+FILES IN THIS DIRECTORY
+================================================================================
+
+app.py                  - Main Flask application
+init_db.py              - Database initialization
+startup.py              - Production startup
+requirements.txt        - Python dependencies
+.env                    - Environment config
+Dockerfile              - Docker build
+docker-compose.yml      - Docker services
+nginx.conf              - Nginx config
+deploy-with-ssl.sh      - Deployment script
+README.md               - Full documentation
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. Fix port 80: sudo systemctl stop nginx && sudo systemctl disable nginx
+2. Start services: docker-compose down && docker-compose up -d
+3. Test HTTPS: curl https://civicfix-server.asolvitra.tech/health
+4. Update frontend: Change API URL to HTTPS
+5. Test all features
+
+================================================================================
+YOU'RE ALMOST THERE! 🚀
+================================================================================
+
+Just run:
+  sudo systemctl stop nginx
+  sudo systemctl disable nginx
+  docker-compose down && docker-compose up -d
+
+Then test:
+  curl https://civicfix-server.asolvitra.tech/health
+
+================================================================================
