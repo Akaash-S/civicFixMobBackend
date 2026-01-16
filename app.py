@@ -1,6 +1,6 @@
 """
-CivicFix Backend - Clean, Production-Ready Flask Application
-Simple, reliable, and easy to deploy
+CivicFix Backend - Neon PostgreSQL + Supabase Storage
+Production-ready Flask application with modern cloud services
 """
 
 import os
@@ -11,22 +11,24 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from flask_migrate import Migrate
 import json
-import boto3
-from botocore.exceptions import ClientError
 import uuid
 from werkzeug.utils import secure_filename
 import jwt
-from functools import lru_cache
+from functools import lru_cache, wraps
 import time
 import hashlib
 import secrets
 
-# Load environment variables from .env file
+# Supabase Storage imports
+from supabase import create_client, Client
+from storage3 import create_client as create_storage_client
+
+# Load environment variables
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # dotenv not installed, use system environment variables
+    pass
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -36,12 +38,12 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
 if not app.config['SECRET_KEY']:
     raise ValueError("SECRET_KEY environment variable is required")
 
-# Database configuration - AWS RDS PostgreSQL only
+# Database configuration - Neon PostgreSQL
 database_url = os.environ.get('DATABASE_URL')
 if not database_url:
-    raise ValueError("DATABASE_URL environment variable is required for AWS RDS connection")
+    raise ValueError("DATABASE_URL environment variable is required for Neon PostgreSQL")
 
-# Handle PostgreSQL URL format
+# Ensure proper PostgreSQL URL format
 if database_url.startswith('postgres://'):
     database_url = database_url.replace('postgres://', 'postgresql://', 1)
 
@@ -57,7 +59,6 @@ cors_origins = os.environ.get('CORS_ORIGINS', '*')
 if cors_origins == '*':
     CORS(app)
 else:
-    # Parse comma-separated origins
     origins = [origin.strip() for origin in cors_origins.split(',')]
     CORS(app, origins=origins)
 
@@ -66,108 +67,215 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ================================
-# AWS S3 Configuration
+# Supabase Storage Configuration
 # ================================
 
-class S3Service:
+class SupabaseStorageService:
+    """Supabase Storage service for media uploads"""
+    
     def __init__(self):
-        self.s3_client = None
-        self.bucket_name = os.environ.get('AWS_S3_BUCKET_NAME')
-        self.region = os.environ.get('AWS_REGION', 'us-east-1')
+        self.supabase_url = os.environ.get('SUPABASE_URL')
+        self.supabase_key = os.environ.get('SUPABASE_KEY')
+        self.supabase_service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+        self.bucket_name = os.environ.get('SUPABASE_STORAGE_BUCKET', 'civicfix-media')
         
-        # Require AWS credentials for both development and production
-        if not self.bucket_name:
-            raise ValueError("AWS_S3_BUCKET_NAME environment variable is required")
+        if not self.supabase_url or not self.supabase_key:
+            raise ValueError("SUPABASE_URL and SUPABASE_KEY are required")
         
-        self.init_s3()
+        self.init_storage()
     
-    def init_s3(self):
-        """Initialize S3 client"""
+    def init_storage(self):
+        """Initialize Supabase client and storage"""
         try:
-            # AWS credentials from environment variables (required)
-            aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
-            aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+            # Use service role key for storage operations (has full access)
+            storage_key = self.supabase_service_key or self.supabase_key
             
-            if not aws_access_key or not aws_secret_key:
-                raise ValueError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables are required")
+            self.supabase: Client = create_client(self.supabase_url, storage_key)
+            self.storage = self.supabase.storage
             
-            self.s3_client = boto3.client(
-                's3',
-                aws_access_key_id=aws_access_key,
-                aws_secret_access_key=aws_secret_key,
-                region_name=self.region
-            )
-            
-            # Test S3 connection only if not in Docker startup
+            # Test connection if not skipping validation
             if os.environ.get('SKIP_VALIDATION') != 'true':
-                self.s3_client.head_bucket(Bucket=self.bucket_name)
-                logger.info(f"S3 client initialized and tested successfully for bucket: {self.bucket_name}")
+                try:
+                    buckets = self.storage.list_buckets()
+                    logger.info(f"Supabase Storage initialized. Available buckets: {[b.name for b in buckets]}")
+                    
+                    # Check if our bucket exists
+                    bucket_exists = any(b.name == self.bucket_name for b in buckets)
+                    if not bucket_exists:
+                        logger.warning(f"Bucket '{self.bucket_name}' not found. Creating it...")
+                        try:
+                            # Create public bucket
+                            self.storage.create_bucket(
+                                self.bucket_name,
+                                options={'public': True}
+                            )
+                            logger.info(f"✅ Created public bucket: {self.bucket_name}")
+                        except Exception as e:
+                            logger.error(f"Failed to create bucket: {e}")
+                            logger.info("Please create the bucket manually in Supabase dashboard")
+                    else:
+                        logger.info(f"✅ Using existing bucket: {self.bucket_name}")
+                        
+                except Exception as e:
+                    logger.warning(f"Could not validate storage: {e}")
             else:
-                logger.info(f"S3 client initialized for bucket: {self.bucket_name} (validation skipped)")
-            
+                logger.info(f"Supabase Storage initialized (validation skipped)")
+                
         except Exception as e:
-            logger.error(f"S3 initialization failed: {e}")
-            # Don't raise error during startup if validation is skipped
+            logger.error(f"Supabase Storage initialization failed: {e}")
             if os.environ.get('SKIP_VALIDATION') != 'true':
-                raise ValueError(f"Failed to initialize S3: {e}")
+                raise ValueError(f"Failed to initialize Supabase Storage: {e}")
             else:
-                logger.warning("S3 initialization failed but continuing (validation skipped)")
-                self.s3_client = None
-    
+                logger.warning("Continuing without Supabase Storage (validation skipped)")
+                self.supabase = None
+                self.storage = None
+
     def upload_file(self, file_data, file_name, content_type='application/octet-stream'):
-        """Upload file to S3 bucket"""
+        """Upload file to Supabase Storage"""
         try:
             # Generate unique filename
             file_extension = file_name.split('.')[-1] if '.' in file_name else ''
             unique_filename = f"issues/{uuid.uuid4()}.{file_extension}" if file_extension else f"issues/{uuid.uuid4()}"
             
-            # Upload file
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=unique_filename,
-                Body=file_data,
-                ContentType=content_type
-                # Removed ACL='public-read' - bucket doesn't allow ACLs
-                # Files will be accessible via bucket policy or CloudFront
+            # Upload file to Supabase Storage
+            result = self.storage.from_(self.bucket_name).upload(
+                path=unique_filename,
+                file=file_data,
+                file_options={"content-type": content_type, "upsert": "true"}
             )
             
             # Generate public URL
-            file_url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{unique_filename}"
+            file_url = self.storage.from_(self.bucket_name).get_public_url(unique_filename)
+            
+            logger.info(f"File uploaded to Supabase Storage: {unique_filename}")
             return file_url, None
             
-        except ClientError as e:
-            logger.error(f"S3 upload failed: {e}")
+        except Exception as e:
+            logger.error(f"Supabase Storage upload failed: {e}")
             return None, str(e)
     
     def delete_file(self, file_url):
-        """Delete file from S3 bucket"""
+        """Delete file from Supabase Storage"""
         try:
-            # Extract key from URL
-            if f"{self.bucket_name}.s3." in file_url:
-                key = file_url.split(f"{self.bucket_name}.s3.{self.region}.amazonaws.com/")[1]
-                self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
-                return True
+            # Extract path from URL
+            # URL format: https://xxx.supabase.co/storage/v1/object/public/bucket-name/path
+            if '/storage/v1/object/public/' in file_url:
+                parts = file_url.split('/storage/v1/object/public/')
+                if len(parts) == 2:
+                    bucket_and_path = parts[1]
+                    path_parts = bucket_and_path.split('/', 1)
+                    if len(path_parts) == 2:
+                        path = path_parts[1]
+                        self.storage.from_(self.bucket_name).remove([path])
+                        logger.info(f"File deleted from Supabase Storage: {path}")
+                        return True
+            
+            logger.warning(f"Could not parse Supabase Storage URL: {file_url}")
+            return False
+            
         except Exception as e:
-            logger.error(f"S3 delete failed: {e}")
-        
-        return False
+            logger.error(f"Supabase Storage delete failed: {e}")
+            return False
 
-# Initialize S3 service
+# Initialize Supabase Storage service
 try:
-    s3_service = S3Service()
-    logger.info("S3 service initialized successfully")
+    storage_service = SupabaseStorageService()
+    logger.info("Supabase Storage service initialized successfully")
 except Exception as e:
-    logger.error(f"S3 service initialization failed: {e}")
-    # Continue without S3 if validation is skipped
+    logger.error(f"Supabase Storage service initialization failed: {e}")
     if os.environ.get('SKIP_VALIDATION') == 'true':
-        logger.warning("Continuing without S3 service (validation skipped)")
-        s3_service = None
+        logger.warning("Continuing without Supabase Storage (validation skipped)")
+        storage_service = None
     else:
         raise
-except Exception as e:
-    logger.warning(f"S3 service initialization failed: {e}")
-    logger.warning("S3 functionality will be disabled")
-    s3_service = None
+
+# ================================
+# Database Initialization
+# ================================
+
+def init_database():
+    """Initialize database tables using SQLAlchemy"""
+    try:
+        logger.info("🔧 Initializing database...")
+        
+        # Create all tables
+        with app.app_context():
+            # Check if tables already exist
+            inspector = db.inspect(db.engine)
+            existing_tables = inspector.get_table_names()
+            
+            if existing_tables:
+                logger.info(f"📋 Found existing tables: {', '.join(existing_tables)}")
+            else:
+                logger.info("📋 No existing tables found. Creating new tables...")
+            
+            # Create all tables defined in models
+            db.create_all()
+            
+            # Create indexes for better performance
+            try:
+                indexes_to_create = [
+                    ("idx_users_firebase_uid", "users", "firebase_uid"),
+                    ("idx_users_email", "users", "email"),
+                    ("idx_issues_created_by", "issues", "created_by"),
+                    ("idx_issues_category", "issues", "category"),
+                    ("idx_issues_status", "issues", "status"),
+                    ("idx_comments_issue_id", "comments", "issue_id"),
+                    ("idx_comments_user_id", "comments", "user_id"),
+                ]
+                
+                for index_name, table_name, column_name in indexes_to_create:
+                    try:
+                        # Use a new connection for each index to avoid transaction issues
+                        with db.engine.begin() as conn:
+                            # Check if index exists
+                            result = conn.execute(db.text(f"""
+                                SELECT 1 FROM pg_indexes 
+                                WHERE indexname = '{index_name}'
+                            """))
+                            
+                            if not result.fetchone():
+                                # Create index
+                                conn.execute(db.text(f"""
+                                    CREATE INDEX IF NOT EXISTS {index_name} 
+                                    ON {table_name}({column_name})
+                                """))
+                                logger.info(f"   ✅ Created index: {index_name}")
+                            else:
+                                logger.info(f"   ℹ️  Index already exists: {index_name}")
+                    except Exception as idx_error:
+                        logger.warning(f"   ⚠️  Could not create index {index_name}: {idx_error}")
+                    
+            except Exception as idx_error:
+                logger.warning(f"⚠️  Index creation failed: {idx_error}")
+            
+            # Verify tables were created
+            inspector = db.inspect(db.engine)
+            tables = inspector.get_table_names()
+            
+            if tables:
+                logger.info(f"✅ Database initialized successfully with tables: {', '.join(tables)}")
+                
+                # Log table details
+                for table in tables:
+                    columns = inspector.get_columns(table)
+                    column_names = [col['name'] for col in columns]
+                    logger.info(f"   📊 Table '{table}': {len(column_names)} columns")
+            else:
+                logger.warning("⚠️  No tables found after initialization")
+                
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed: {e}")
+        if os.environ.get('SKIP_VALIDATION') != 'true':
+            raise
+        else:
+            logger.warning("Continuing despite database initialization failure (validation skipped)")
+
+# Initialize database on startup
+if os.environ.get('SKIP_VALIDATION') != 'true':
+    init_database()
+else:
+    logger.info("Database initialization skipped (SKIP_VALIDATION=true)")
 
 # ================================
 # Models
@@ -179,16 +287,14 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     firebase_uid = db.Column(db.String(128), unique=True, nullable=False, index=True)
     email = db.Column(db.String(255), unique=True, nullable=False)
-    name = db.Column(db.String(255), nullable=False)  # Google OAuth name (read-only)
-    display_name = db.Column(db.String(255))  # User-customizable display name
+    name = db.Column(db.String(255), nullable=False)
+    display_name = db.Column(db.String(255))
     phone = db.Column(db.String(20))
     photo_url = db.Column(db.String(500))
-    bio = db.Column(db.Text)  # Added bio field
-    # Onboarding fields
-    password_hash = db.Column(db.String(255))  # Hashed password for account security
-    language = db.Column(db.String(10), default='en')  # User preferred language
-    onboarding_completed = db.Column(db.Boolean, default=False)  # Onboarding completion status
-    # Settings fields
+    bio = db.Column(db.Text)
+    password_hash = db.Column(db.String(255))
+    language = db.Column(db.String(10), default='en')
+    onboarding_completed = db.Column(db.Boolean, default=False)
     notifications_enabled = db.Column(db.Boolean, default=True)
     dark_mode = db.Column(db.Boolean, default=False)
     anonymous_reporting = db.Column(db.Boolean, default=False)
@@ -197,7 +303,6 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relationships
     issues = db.relationship('Issue', backref='creator', lazy=True)
     
     def to_dict(self):
@@ -233,35 +338,28 @@ class Issue(db.Model):
     latitude = db.Column(db.Float, nullable=False)
     longitude = db.Column(db.Float, nullable=False)
     address = db.Column(db.String(500))
-    # Support both old and new schema
-    image_url = db.Column(db.String(500))  # Legacy field
-    image_urls = db.Column(db.Text)  # New field - JSON array of image URLs
-    upvotes = db.Column(db.Integer, default=0, nullable=False)  # Upvotes count
+    image_url = db.Column(db.String(500))
+    image_urls = db.Column(db.Text)
+    upvotes = db.Column(db.Integer, default=0, nullable=False)
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relationships
     comments = db.relationship('Comment', backref='issue', lazy=True, cascade='all, delete-orphan')
     
     def get_image_urls(self):
-        """Get image URLs as list"""
-        # Try new field first
         if self.image_urls:
             try:
                 return json.loads(self.image_urls)
             except:
                 return []
-        # Fallback to legacy field
         elif self.image_url:
             return [self.image_url]
         return []
     
     def set_image_urls(self, urls):
-        """Set image URLs from list"""
         if urls:
             self.image_urls = json.dumps(urls)
-            # Also set first URL as legacy field for backward compatibility
             self.image_url = urls[0] if urls else None
         else:
             self.image_urls = None
@@ -289,31 +387,29 @@ class Issue(db.Model):
 class Comment(db.Model):
     __tablename__ = 'comments'
     
-    id = db.Column(db.String(36), primary_key=True)  # VARCHAR(36) in database
+    id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.Text, nullable=False)
-    issue_id = db.Column(db.String(36), db.ForeignKey('issues.id'), nullable=False)  # VARCHAR(36)
-    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)  # VARCHAR(36)
+    issue_id = db.Column(db.Integer, db.ForeignKey('issues.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    # Note: updated_at column doesn't exist in database
     
-    # Relationships
     user = db.relationship('User', backref='comments')
     
     def to_dict(self):
         return {
             'id': self.id,
-            'content': self.text,  # Map 'text' field to 'content' for API consistency
+            'content': self.text,
             'issue_id': self.issue_id,
             'user_id': self.user_id,
             'user_name': self.user.name if self.user else None,
             'user_display_name': self.user.display_name if self.user else None,
             'user_photo': self.user.photo_url if self.user else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.created_at.isoformat() if self.created_at else None  # Use created_at for both
+            'updated_at': self.created_at.isoformat() if self.created_at else None
         }
 
 # ================================
-# Supabase Authentication (Only)
+# Supabase Authentication
 # ================================
 
 @lru_cache(maxsize=1)
@@ -322,457 +418,144 @@ def get_supabase_jwt_secret():
     jwt_secret = os.environ.get('SUPABASE_JWT_SECRET')
     if not jwt_secret:
         logger.error("SUPABASE_JWT_SECRET not found in environment variables")
-        logger.error("Available environment variables starting with 'SUPABASE':")
-        for key in os.environ:
-            if key.startswith('SUPABASE'):
-                logger.error(f"  {key}={os.environ[key][:20]}...")
         return None
-    
     logger.info(f"Supabase JWT secret loaded: {jwt_secret[:20]}... (length: {len(jwt_secret)})")
     return jwt_secret
 
 def verify_supabase_token(token):
-    """
-    Verify Supabase JWT access token with comprehensive error handling
-    Fixes clock skew, malformed tokens, and signature verification issues
-    """
+    """Verify Supabase JWT access token"""
     try:
         jwt_secret = get_supabase_jwt_secret()
         if not jwt_secret:
-            logger.error("Supabase JWT secret not configured")
             return None
         
-        # Step 1: Basic token format validation (fail fast)
         if not token or not isinstance(token, str):
-            logger.error("Token is empty or not a string")
             return None
         
         token_parts = token.split('.')
         if len(token_parts) != 3:
-            logger.error(f"Failed to decode token header: Not enough segments")
             return None
         
-        # Step 2: Decode header to check algorithm
         try:
             header = jwt.get_unverified_header(token)
             algorithm = header.get('alg', 'HS256')
-            logger.debug(f"Token uses algorithm: {algorithm}")
         except Exception as e:
             logger.error(f"Failed to decode token header: {e}")
             return None
         
         decoded_token = None
         
-        # Step 3: Handle different algorithms with proper error handling
         if algorithm == 'HS256':
-            # Standard HMAC verification with Supabase JWT secret
             try:
-                # CRITICAL FIX: Disable iat validation to handle clock skew
                 decoded_token = jwt.decode(
-                    token, 
-                    jwt_secret, 
-                    algorithms=['HS256'],
-                    options={
-                        "verify_exp": True,      # Still verify expiration
-                        "verify_aud": False,     # Supabase doesn't always set audience
-                        "verify_iat": False,     # DISABLE to fix clock skew issues
-                        "verify_nbf": False      # Disable not-before validation
-                    }
+                    token, jwt_secret, algorithms=['HS256'],
+                    options={"verify_exp": True, "verify_aud": False, "verify_iat": False, "verify_nbf": False}
                 )
-                logger.debug("Successfully verified HS256 token")
-                
-            except jwt.ExpiredSignatureError:
-                logger.error("Supabase token expired")
+            except (jwt.ExpiredSignatureError, jwt.InvalidSignatureError, jwt.InvalidTokenError) as e:
+                logger.error(f"Token verification failed: {e}")
                 return None
-            except jwt.InvalidSignatureError:
-                logger.error("Invalid HS256 token: Signature verification failed")
-                return None
-            except jwt.InvalidTokenError as e:
-                logger.error(f"Invalid HS256 token: {e}")
-                return None
-                
         elif algorithm in ['ES256', 'RS256']:
-            # For ES256/RS256, decode without signature verification for now
-            # In production, you should get the public key from Supabase
-            logger.warning(f"Token uses {algorithm} - decoding without signature verification")
             try:
                 decoded_token = jwt.decode(
-                    token, 
-                    options={
-                        "verify_signature": False,  # No public key available
-                        "verify_exp": True,         # Still check expiration
-                        "verify_aud": False,
-                        "verify_iat": False,        # Disable to fix clock skew
-                        "verify_nbf": False
-                    }
+                    token, options={"verify_signature": False, "verify_exp": True, "verify_aud": False, "verify_iat": False, "verify_nbf": False}
                 )
-                
-                # Manual expiration check since we're not verifying signature
                 current_time = int(time.time())
                 if 'exp' in decoded_token and decoded_token['exp'] < current_time:
-                    logger.error("Token expired")
                     return None
-                    
-                logger.debug(f"Successfully decoded {algorithm} token (no signature verification)")
-                
-            except jwt.ExpiredSignatureError:
-                logger.error("Token expired")
-                return None
             except Exception as e:
-                logger.error(f"Failed to decode {algorithm} token: {e}")
+                logger.error(f"Failed to decode token: {e}")
                 return None
         else:
-            logger.error(f"Unsupported algorithm: {algorithm}")
             return None
         
-        # Step 4: Validate decoded token structure
-        if not decoded_token or not isinstance(decoded_token, dict):
-            logger.error("Invalid token: decoded token is not a valid dictionary")
-            return None
-            
-        if 'sub' not in decoded_token:
-            logger.error("Invalid Supabase token: missing 'sub' field")
+        if not decoded_token or 'sub' not in decoded_token:
             return None
         
-        # Step 5: Extract user information from Supabase token
         user_data = {
             'uid': decoded_token['sub'],
             'email': decoded_token.get('email', ''),
-            'name': (
-                decoded_token.get('user_metadata', {}).get('full_name') or 
-                decoded_token.get('user_metadata', {}).get('name') or
-                decoded_token.get('name') or
-                (decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User')
-            ),
+            'name': (decoded_token.get('user_metadata', {}).get('full_name') or 
+                    decoded_token.get('user_metadata', {}).get('name') or
+                    decoded_token.get('name') or
+                    (decoded_token.get('email', '').split('@')[0] if decoded_token.get('email') else 'User')),
             'provider': 'supabase',
-            'aud': decoded_token.get('aud', ''),
-            'role': decoded_token.get('role', 'authenticated'),
-            'algorithm': algorithm,
-            'user_metadata': decoded_token.get('user_metadata', {}),
-            'app_metadata': decoded_token.get('app_metadata', {}),
-            'exp': decoded_token.get('exp'),
-            'iat': decoded_token.get('iat')
+            'user_metadata': decoded_token.get('user_metadata', {})
         }
         
-        logger.info(f"Supabase token verified successfully with {algorithm} for user: {user_data['email']}")
         return user_data
-        
     except Exception as e:
-        logger.error(f"Supabase token verification failed: {e}")
+        logger.error(f"Token verification failed: {e}")
         return None
 
 def require_auth(f):
-    """
-    Decorator to require Supabase authentication with comprehensive validation
-    Implements fail-fast validation for malformed requests and tokens
-    Fixes all authentication issues: clock skew, malformed tokens, invalid headers
-    """
-    from functools import wraps
-    
+    """Decorator to require Supabase authentication"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Step 1: Validate Authorization header presence
         auth_header = request.headers.get('Authorization')
         
-        if not auth_header:
-            logger.warning(f"Missing Authorization header from {request.remote_addr}")
-            return jsonify({
-                'error': 'Authorization header required',
-                'message': 'Please provide Authorization: Bearer <token> header'
-            }), 401
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization header required'}), 401
         
-        # Step 2: Validate Bearer format (fix "Invalid Authorization header format")
-        if not auth_header.startswith('Bearer '):
-            logger.warning(f"Invalid Authorization header format from {request.remote_addr}: {auth_header[:50]}")
-            return jsonify({
-                'error': 'Invalid Authorization header format',
-                'message': 'Authorization header must be: Bearer <token>'
-            }), 401
+        token = auth_header[7:].strip()
         
-        # Step 3: Extract token (strict validation - nginx must preserve exact headers)
-        try:
-            # Check for exact "Bearer " prefix (case sensitive, single space)
-            if not auth_header.startswith('Bearer '):
-                logger.warning(f"Invalid Authorization header format from {request.remote_addr}: {auth_header[:50]}")
-                return jsonify({
-                    'error': 'Invalid Authorization header format',
-                    'message': 'Authorization header must be: Bearer <token>'
-                }), 401
-            
-            # Extract token part after "Bearer "
-            token_part = auth_header[7:]  # Remove "Bearer " (7 characters)
-            
-            # STRICT VALIDATION: Check for multiple spaces or trailing spaces
-            if '  ' in auth_header or auth_header.rstrip() != auth_header:
-                logger.warning(f"Invalid Authorization header with extra spaces from {request.remote_addr}: '{auth_header}'")
-                return jsonify({
-                    'error': 'Invalid Authorization header format',
-                    'message': 'Authorization header must be: Bearer <token> (single space, no trailing spaces)'
-                }), 401
-            
-            # Validate token is not empty after Bearer
-            if not token_part or token_part.isspace():
-                logger.warning(f"Empty token after Bearer from {request.remote_addr}")
-                return jsonify({
-                    'error': 'Empty token',
-                    'message': 'JWT token cannot be empty after Bearer'
-                }), 401
-            
-            token = token_part.strip()
-            
-            # Final validation: token should not be empty after stripping
-            if not token:
-                logger.warning(f"Token is empty after processing from {request.remote_addr}")
-                return jsonify({
-                    'error': 'Empty token',
-                    'message': 'JWT token cannot be empty'
-                }), 401
-            
-        except (IndexError, AttributeError) as e:
-            logger.warning(f"Failed to extract token from Authorization header from {request.remote_addr}: {e}")
-            return jsonify({
-                'error': 'Invalid Authorization header format',
-                'message': 'Unable to extract token from Authorization header'
-            }), 401
+        if not token or len(token) > 8192:
+            return jsonify({'error': 'Invalid token'}), 401
         
-        # Step 4: Validate token is not empty and reasonable length
-        if not token or token == '':
-            logger.warning(f"Empty token in Authorization header from {request.remote_addr}")
-            return jsonify({
-                'error': 'Empty token',
-                'message': 'JWT token cannot be empty'
-            }), 401
+        if len(token.split('.')) != 3:
+            return jsonify({'error': 'Malformed JWT token'}), 401
         
-        # Validate token length (prevent extremely long tokens that could cause issues)
-        if len(token) > 8192:  # 8KB limit for JWT tokens
-            logger.warning(f"Token too long from {request.remote_addr}: {len(token)} characters")
-            return jsonify({
-                'error': 'Token too long',
-                'message': 'JWT token exceeds maximum allowed length'
-            }), 400
-        
-        # Step 5: Basic token format validation (fix "Not enough segments")
-        if token in ['invalid-token', 'invalid-token-123', 'header.payload']:
-            logger.warning(f"Obviously invalid token from {request.remote_addr}: {token}")
-            return jsonify({
-                'error': 'Invalid token format',
-                'message': 'Token appears to be a test or placeholder value'
-            }), 401
-        
-        token_segments = token.split('.')
-        if len(token_segments) != 3:
-            logger.warning(f"Malformed JWT token from {request.remote_addr}: {len(token_segments)} segments")
-            return jsonify({
-                'error': 'Malformed JWT token',
-                'message': 'JWT token must have exactly 3 segments (header.payload.signature)'
-            }), 401
-        
-        # Step 6: Verify token with Supabase (handles clock skew and signature issues)
-        logger.debug(f"Verifying Supabase JWT token from {request.remote_addr}")
         user_data = verify_supabase_token(token)
-        
         if not user_data:
-            logger.warning(f"Token verification failed from {request.remote_addr} for token: {token[:20]}...")
-            return jsonify({
-                'error': 'Invalid or expired token',
-                'message': 'Please refresh your session and try again'
-            }), 401
+            return jsonify({'error': 'Invalid or expired token'}), 401
         
-        # Step 7: Sync user to database with detailed error handling
         try:
             user = sync_user_to_database(user_data)
             if not user:
-                logger.error(f"Failed to sync user to database: {user_data.get('email', 'unknown')}")
-                logger.error(f"User data received: {user_data}")
-                return jsonify({
-                    'error': 'User synchronization failed',
-                    'message': 'Unable to process user data. Please try again.'
-                }), 500
+                return jsonify({'error': 'User synchronization failed'}), 500
             
-            # Step 8: Apply role-based access control
             if not check_user_permissions(user, request.endpoint):
-                logger.warning(f"User {user.email} denied access to {request.endpoint}")
-                return jsonify({
-                    'error': 'Insufficient permissions',
-                    'message': 'You do not have permission to access this resource'
-                }), 403
-            
-            # Step 9: Log successful authentication
-            logger.info(f"Authentication successful: {user.email} (Supabase) -> {request.endpoint}")
+                return jsonify({'error': 'Insufficient permissions'}), 403
             
             return f(user, *args, **kwargs)
-            
         except Exception as e:
-            logger.error(f"Database error during authentication: {e}", exc_info=True)
-            logger.error(f"User data that caused error: {user_data}")
+            logger.error(f"Authentication error: {e}")
             try:
                 db.session.rollback()
             except:
-                pass  # Ignore rollback errors
-            return jsonify({
-                'error': 'Authentication database error',
-                'message': 'Unable to process authentication. Please try again.'
-            }), 500
+                pass
+            return jsonify({'error': 'Authentication failed'}), 500
     
     return decorated_function
 
 def sync_user_to_database(user_data):
-    """
-    Sync Supabase user data to local database
-    Creates or updates user record with bulletproof error handling
-    Handles all database constraints and edge cases
-    """
+    """Sync Supabase user data to local database"""
     try:
-        # Validate input data
-        if not user_data or not isinstance(user_data, dict):
-            logger.error("Invalid user_data provided to sync_user_to_database")
+        if not user_data or not user_data.get('uid'):
             return None
         
-        uid = user_data.get('uid')
-        if not uid:
-            logger.error("No UID provided in user_data")
-            return None
-        
-        # Look up user by Supabase UID
+        uid = user_data['uid']
         user = User.query.filter_by(firebase_uid=uid).first()
         
         if not user:
-            # Create new user with bulletproof validation
-            email = user_data.get('email', '').strip()
-            name = user_data.get('name', '').strip()
+            email = user_data.get('email', '').strip() or f"user_{uid[:16]}@civicfix.temp"
+            name = user_data.get('name', '').strip() or f"User_{uid[:8]}"
             
-            # Handle email constraint (unique=True, nullable=False)
-            if not email:
-                # Generate unique email based on UID
-                email = f"user_{uid.replace('-', '')[:16]}@civicfix.temp"
-            
-            # Check if email already exists (handle unique constraint)
-            existing_email_user = User.query.filter_by(email=email).first()
-            if existing_email_user:
-                # Generate unique email with timestamp
-                import time
-                timestamp = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
-                email = f"user_{uid.replace('-', '')[:10]}_{timestamp}@civicfix.temp"
-            
-            # Handle name constraint (nullable=False)
-            if not name:
-                name = f"User_{uid.replace('-', '')[:8]}"
-            
-            # Ensure name is not too long (max 255 chars)
-            if len(name) > 255:
-                name = name[:255]
-            
-            # Ensure email is not too long (max 255 chars)
-            if len(email) > 255:
-                email = f"user_{uid[:8]}@temp.com"
-            
-            # Create user with validated data
-            try:
-                user = User(
-                    firebase_uid=uid,
-                    email=email,
-                    name=name,
-                    display_name=name,  # Set display_name to same as name initially
-                    phone='',
-                    photo_url=user_data.get('user_metadata', {}).get('avatar_url', '') or ''
-                )
-                
-                db.session.add(user)
-                db.session.commit()
-                logger.info(f"Created new user: {user.email} (Supabase UID: {uid})")
-                
-            except Exception as db_error:
-                db.session.rollback()
-                logger.error(f"Database error creating user: {db_error}")
-                
-                # Check if user was created by concurrent request
-                user = User.query.filter_by(firebase_uid=uid).first()
-                if user:
-                    logger.info(f"User found after rollback (concurrent creation): {user.email}")
-                    return user
-                
-                # Final fallback - create with minimal guaranteed unique data
-                try:
-                    import uuid
-                    unique_suffix = str(uuid.uuid4())[:8]
-                    fallback_email = f"fallback_{unique_suffix}@civicfix.temp"
-                    fallback_name = f"User_{unique_suffix}"
-                    
-                    user = User(
-                        firebase_uid=uid,
-                        email=fallback_email,
-                        name=fallback_name,
-                        phone='',
-                        photo_url=''
-                    )
-                    
-                    db.session.add(user)
-                    db.session.commit()
-                    logger.info(f"Created fallback user: {user.email}")
-                    
-                except Exception as final_error:
-                    db.session.rollback()
-                    logger.error(f"Final fallback user creation failed: {final_error}")
-                    return None
-        else:
-            # Update existing user info if needed
-            updated = False
-            
-            # Update email if provided and different
-            new_email = user_data.get('email', '').strip()
-            if new_email and new_email != user.email:
-                # Check if new email is already taken by another user
-                existing_user = User.query.filter_by(email=new_email).filter(User.id != user.id).first()
-                if not existing_user:
-                    try:
-                        user.email = new_email
-                        updated = True
-                    except Exception as email_error:
-                        logger.warning(f"Could not update email for user {user.id}: {email_error}")
-                else:
-                    logger.warning(f"Email {new_email} already taken by another user")
-            
-            # Update name if provided and different
-            new_name = user_data.get('name', '').strip()
-            if new_name and new_name != user.name:
-                # Ensure name is not too long
-                if len(new_name) > 255:
-                    new_name = new_name[:255]
-                user.name = new_name
-                updated = True
-            
-            # Update photo URL from user metadata
-            new_photo_url = user_data.get('user_metadata', {}).get('avatar_url', '') or ''
-            if new_photo_url and new_photo_url != user.photo_url:
-                # Ensure photo URL is not too long
-                if len(new_photo_url) > 500:
-                    new_photo_url = new_photo_url[:500]
-                user.photo_url = new_photo_url
-                updated = True
-            
-            # Commit updates if any
-            if updated:
-                try:
-                    user.updated_at = datetime.utcnow()
-                    db.session.commit()
-                    logger.info(f"Updated user info: {user.email}")
-                except Exception as update_error:
-                    db.session.rollback()
-                    logger.warning(f"Could not update user {user.id}: {update_error}")
+            user = User(
+                firebase_uid=uid,
+                email=email,
+                name=name,
+                display_name=name,
+                photo_url=user_data.get('user_metadata', {}).get('avatar_url', '')
+            )
+            db.session.add(user)
+            db.session.commit()
+            logger.info(f"Created new user: {user.email}")
         
         return user
-        
     except Exception as e:
-        logger.error(f"Failed to sync user to database: {e}", exc_info=True)
-        try:
-            db.session.rollback()
-        except:
-            pass  # Ignore rollback errors
+        logger.error(f"Failed to sync user: {e}")
+        db.session.rollback()
         return None
-
-# ================================
-# Password Utility Functions
-# ================================
 
 def hash_password(password: str) -> str:
     """Hash a password using SHA-256 with salt"""
@@ -789,18 +572,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 def check_user_permissions(user, endpoint):
-    """
-    Role-based access control
-    Check if user has permission to access the endpoint
-    """
-    # For now, all authenticated users have access to all endpoints
-    # You can extend this with role-based logic later
-    
-    # Example role-based access control:
-    # if endpoint == 'admin_only_endpoint':
-    #     return user.role == 'admin'
-    
-    # For CivicFix, all authenticated users can access all endpoints
+    """Role-based access control"""
     return True
 
 # ================================
@@ -812,8 +584,10 @@ def home():
     """Home endpoint"""
     return jsonify({
         'message': 'CivicFix Backend API',
-        'version': '2.0.0',
+        'version': '3.0.0',
         'status': 'running',
+        'database': 'Neon PostgreSQL',
+        'storage': 'Supabase Storage',
         'timestamp': datetime.utcnow().isoformat()
     })
 
@@ -821,1117 +595,36 @@ def home():
 def health():
     """Health check endpoint"""
     try:
-        # Test database connection
         db.session.execute(db.text('SELECT 1'))
         db_status = 'healthy'
     except Exception as e:
         db_status = f'unhealthy: {str(e)}'
     
-    # Check Supabase JWT secret status
     supabase_status = 'healthy' if get_supabase_jwt_secret() else 'not_configured'
     
-    # Check S3 status
     try:
-        if s3_service:
-            s3_service.s3_client.head_bucket(Bucket=s3_service.bucket_name)
-            s3_status = 'healthy'
+        if storage_service and storage_service.storage:
+            storage_service.storage.list_buckets()
+            storage_status = 'healthy'
         else:
-            s3_status = 'disabled'
+            storage_status = 'disabled'
     except Exception as e:
-        s3_status = f'unhealthy: {str(e)}'
+        storage_status = f'unhealthy: {str(e)}'
     
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat(),
-        'version': '3.0.0-supabase',
-        'authentication': 'supabase',
+        'version': '3.0.0',
         'services': {
             'database': db_status,
             'supabase_auth': supabase_status,
-            's3': s3_status
+            'supabase_storage': storage_status
         }
     })
 
-
-
-# ================================
-# File Upload Routes
-# ================================
-
-@app.route('/api/v1/upload', methods=['POST'])
-@require_auth
-def upload_file(current_user):
-    """Upload file (image or video) to S3"""
-    try:
-        if not s3_service:
-            return jsonify({'error': 'File upload service not available'}), 503
-            
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
-        
-        # Validate file type - support both images and videos
-        allowed_extensions = {
-            # Images
-            'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff',
-            # Videos
-            'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'
-        }
-        file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-        
-        if file_extension not in allowed_extensions:
-            return jsonify({
-                'error': 'Invalid file type. Allowed: ' + ', '.join(sorted(allowed_extensions))
-            }), 400
-        
-        # Validate file size - different limits for images and videos
-        file.seek(0, 2)  # Seek to end
-        file_size = file.tell()
-        file.seek(0)  # Reset to beginning
-        
-        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'}
-        max_size = 50 * 1024 * 1024 if file_extension in video_extensions else 10 * 1024 * 1024  # 50MB for videos, 10MB for images
-        
-        if file_size > max_size:
-            size_limit = "50MB" if file_extension in video_extensions else "10MB"
-            return jsonify({'error': f'File too large. Maximum size for {file_extension}: {size_limit}'}), 400
-        
-        # Upload to S3
-        file_data = file.read()
-        
-        # Set appropriate content type
-        if file_extension in video_extensions:
-            content_type = f'video/{file_extension}' if file_extension != '3gp' else 'video/3gpp'
-        else:
-            content_type = file.content_type or f'image/{file_extension}'
-        
-        file_url, error = s3_service.upload_file(file_data, file.filename, content_type)
-        
-        if error:
-            return jsonify({'error': f'Upload failed: {error}'}), 500
-        
-        logger.info(f"File uploaded by user {current_user.email}: {file_url} ({file_size} bytes)")
-        
-        return jsonify({
-            'message': 'File uploaded successfully',
-            'file_url': file_url,
-            'file_name': file.filename,
-            'file_size': file_size,
-            'file_type': 'video' if file_extension in video_extensions else 'image',
-            'content_type': content_type
-        }), 201
-        
-    except Exception as e:
-        logger.error(f"Error uploading file: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/upload/multiple', methods=['POST'])
-@require_auth
-def upload_multiple_files(current_user):
-    """Upload multiple files (images and videos) to S3"""
-    try:
-        if not s3_service:
-            return jsonify({'error': 'File upload service not available'}), 503
-            
-        if 'files' not in request.files:
-            return jsonify({'error': 'No files provided'}), 400
-        
-        files = request.files.getlist('files')
-        if not files or all(f.filename == '' for f in files):
-            return jsonify({'error': 'No files selected'}), 400
-        
-        # Limit number of files
-        if len(files) > 10:
-            return jsonify({'error': 'Maximum 10 files allowed'}), 400
-        
-        uploaded_files = []
-        errors = []
-        
-        # Allowed file extensions
-        allowed_extensions = {
-            # Images
-            'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff',
-            # Videos
-            'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'
-        }
-        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'}
-        
-        for file in files:
-            if file.filename == '':
-                continue
-            
-            try:
-                # Validate file type
-                file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-                
-                if file_extension not in allowed_extensions:
-                    errors.append(f"{file.filename}: Invalid file type")
-                    continue
-                
-                # Validate file size
-                file.seek(0, 2)
-                file_size = file.tell()
-                file.seek(0)
-                
-                max_size = 50 * 1024 * 1024 if file_extension in video_extensions else 10 * 1024 * 1024  # 50MB for videos, 10MB for images
-                
-                if file_size > max_size:
-                    size_limit = "50MB" if file_extension in video_extensions else "10MB"
-                    errors.append(f"{file.filename}: File too large (max {size_limit})")
-                    continue
-                
-                # Upload to S3
-                file_data = file.read()
-                
-                # Set appropriate content type
-                if file_extension in video_extensions:
-                    content_type = f'video/{file_extension}' if file_extension != '3gp' else 'video/3gpp'
-                else:
-                    content_type = file.content_type or f'image/{file_extension}'
-                
-                file_url, error = s3_service.upload_file(file_data, file.filename, content_type)
-                
-                if error:
-                    errors.append(f"{file.filename}: Upload failed - {error}")
-                else:
-                    uploaded_files.append({
-                        'file_url': file_url,
-                        'file_name': file.filename,
-                        'file_size': file_size,
-                        'file_type': 'video' if file_extension in video_extensions else 'image',
-                        'content_type': content_type
-                    })
-                
-            except Exception as e:
-                errors.append(f"{file.filename}: {str(e)}")
-        
-        logger.info(f"Multiple files uploaded by user {current_user.email}: {len(uploaded_files)} successful, {len(errors)} failed")
-        
-        return jsonify({
-            'message': f'{len(uploaded_files)} files uploaded successfully',
-            'uploaded_files': uploaded_files,
-            'errors': errors
-        }), 201 if uploaded_files else 400
-        
-    except Exception as e:
-        logger.error(f"Error uploading multiple files: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/issues/upload-media', methods=['POST'])
-@require_auth
-def upload_issue_media(current_user):
-    """Upload media files for issue creation/update"""
-    try:
-        logger.info(f"📤 Media upload request from user: {current_user.email}")
-        logger.info(f"📤 Request files: {list(request.files.keys())}")
-        logger.info(f"📤 Request form: {dict(request.form)}")
-        
-        if not s3_service:
-            logger.error("📤 S3 service not available")
-            return jsonify({'error': 'File upload service not available'}), 503
-            
-        if 'files' not in request.files:
-            logger.warning("📤 No 'files' field in request")
-            logger.warning(f"📤 Available fields: {list(request.files.keys())}")
-            return jsonify({'error': 'No files provided'}), 400
-        
-        files = request.files.getlist('files')
-        logger.info(f"📤 Received {len(files)} files")
-        
-        for i, file in enumerate(files):
-            logger.info(f"📤 File {i+1}: name='{file.filename}', content_type='{file.content_type}', size={len(file.read())} bytes")
-            file.seek(0)  # Reset file pointer after reading for size
-        
-        if not files or all(f.filename == '' for f in files):
-            logger.warning("📤 No files selected or all files have empty names")
-            return jsonify({'error': 'No files selected'}), 400
-        
-        # Limit number of files for issues
-        if len(files) > 8:
-            return jsonify({'error': 'Maximum 8 media files allowed per issue'}), 400
-        
-        uploaded_files = []
-        errors = []
-        total_size = 0
-        
-        # Allowed file extensions for issues
-        allowed_extensions = {
-            # Images
-            'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp',
-            # Videos
-            'mp4', 'mov', 'avi', 'mkv', 'webm'
-        }
-        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'webm'}
-        
-        for file in files:
-            if file.filename == '':
-                continue
-            
-            try:
-                # Validate file type
-                file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-                
-                if file_extension not in allowed_extensions:
-                    errors.append(f"{file.filename}: Invalid file type. Allowed: {', '.join(sorted(allowed_extensions))}")
-                    continue
-                
-                # Validate file size
-                file.seek(0, 2)
-                file_size = file.tell()
-                file.seek(0)
-                
-                # Different size limits for different file types
-                if file_extension in video_extensions:
-                    max_size = 100 * 1024 * 1024  # 100MB for videos
-                    size_limit = "100MB"
-                else:
-                    max_size = 15 * 1024 * 1024  # 15MB for images
-                    size_limit = "15MB"
-                
-                if file_size > max_size:
-                    errors.append(f"{file.filename}: File too large (max {size_limit} for {file_extension})")
-                    continue
-                
-                total_size += file_size
-                
-                # Check total upload size (max 200MB per issue)
-                if total_size > 200 * 1024 * 1024:
-                    errors.append(f"{file.filename}: Total upload size exceeds 200MB limit")
-                    continue
-                
-                # Upload to S3 with issue-specific path
-                file_data = file.read()
-                
-                # Set appropriate content type
-                if file_extension in video_extensions:
-                    content_type = f'video/{file_extension}'
-                else:
-                    content_type = file.content_type or f'image/{file_extension}'
-                
-                # Use issue-specific S3 path
-                file_url, error = s3_service.upload_file(file_data, f"issue_media_{file.filename}", content_type)
-                
-                if error:
-                    errors.append(f"{file.filename}: Upload failed - {error}")
-                else:
-                    uploaded_files.append({
-                        'file_url': file_url,
-                        'file_name': file.filename,
-                        'file_size': file_size,
-                        'file_type': 'video' if file_extension in video_extensions else 'image',
-                        'content_type': content_type,
-                        'file_extension': file_extension
-                    })
-                
-            except Exception as e:
-                errors.append(f"{file.filename}: {str(e)}")
-        
-        logger.info(f"Issue media uploaded by user {current_user.email}: {len(uploaded_files)} successful, {len(errors)} failed, total size: {total_size} bytes")
-        
-        # Return URLs array for easy integration with issue creation
-        media_urls = [file['file_url'] for file in uploaded_files]
-        
-        return jsonify({
-            'message': f'{len(uploaded_files)} media files uploaded successfully',
-            'media_urls': media_urls,
-            'uploaded_files': uploaded_files,
-            'errors': errors,
-            'total_size': total_size,
-            'summary': {
-                'images': len([f for f in uploaded_files if f['file_type'] == 'image']),
-                'videos': len([f for f in uploaded_files if f['file_type'] == 'video']),
-                'total_files': len(uploaded_files)
-            }
-        }), 201 if uploaded_files else 400
-        
-    except Exception as e:
-        logger.error(f"Error uploading issue media: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/upload/video', methods=['POST'])
-@require_auth
-def upload_video(current_user):
-    """Upload video file to S3 - optimized for video recorder"""
-    try:
-        if not s3_service:
-            return jsonify({'error': 'Video upload service not available'}), 503
-            
-        if 'file' not in request.files:
-            return jsonify({'error': 'No video file provided'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No video file selected'}), 400
-        
-        # Validate video file type
-        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp', 'm4v'}
-        file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-        
-        if file_extension not in video_extensions:
-            return jsonify({
-                'error': f'Invalid video format. Supported formats: {", ".join(sorted(video_extensions))}'
-            }), 400
-        
-        # Validate video file size (100MB limit for videos)
-        file.seek(0, 2)  # Seek to end
-        file_size = file.tell()
-        file.seek(0)  # Reset to beginning
-        
-        max_video_size = 100 * 1024 * 1024  # 100MB for videos
-        
-        if file_size > max_video_size:
-            return jsonify({'error': 'Video file too large. Maximum size: 100MB'}), 400
-        
-        # Generate unique filename with timestamp and user ID
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        unique_filename = f"videos/{current_user.id}/{timestamp}_{secure_filename(file.filename)}"
-        
-        # Set video content type
-        content_type_map = {
-            'mp4': 'video/mp4',
-            'mov': 'video/quicktime',
-            'avi': 'video/x-msvideo',
-            'mkv': 'video/x-matroska',
-            'wmv': 'video/x-ms-wmv',
-            'flv': 'video/x-flv',
-            'webm': 'video/webm',
-            '3gp': 'video/3gpp',
-            'm4v': 'video/x-m4v'
-        }
-        content_type = content_type_map.get(file_extension, 'video/mp4')
-        
-        # Upload to S3
-        file_url = s3_service.upload_file(
-            file, 
-            unique_filename, 
-            content_type=content_type
-        )
-        
-        # Log the upload
-        logger.info(f"Video uploaded successfully: {unique_filename} ({file_size} bytes) by user {current_user.id}")
-        
-        return jsonify({
-            'message': 'Video uploaded successfully',
-            'file_url': file_url,
-            'file_name': file.filename,
-            'file_size': file_size,
-            'file_type': 'video',
-            'content_type': content_type,
-            'file_extension': file_extension,
-            'upload_timestamp': datetime.utcnow().isoformat(),
-            'user_id': current_user.id
-        }), 201
-        
-    except Exception as e:
-        logger.error(f"Error uploading video: {e}")
-        return jsonify({'error': 'Video upload failed. Please try again.'}), 500
-
-# ================================
-# Issue Routes
-# ================================
-
-@app.route('/api/v1/issues', methods=['GET'])
-def get_issues():
-    """Get all issues with optional filtering and search"""
-    try:
-        # Query parameters
-        page = request.args.get('page', 1, type=int)
-        per_page = min(request.args.get('per_page', 20, type=int), 100)
-        category = request.args.get('category')
-        status = request.args.get('status')
-        search = request.args.get('search')  # New search parameter
-        
-        # Build query
-        query = Issue.query
-        
-        # Search functionality - search in title, description, and address
-        if search:
-            search_term = f"%{search}%"
-            query = query.filter(
-                db.or_(
-                    Issue.title.ilike(search_term),
-                    Issue.description.ilike(search_term),
-                    Issue.address.ilike(search_term)
-                )
-            )
-        
-        # Category filter
-        if category and category.lower() != 'all':
-            query = query.filter(Issue.category == category)
-        
-        # Status filter
-        if status:
-            query = query.filter(Issue.status == status)
-        
-        # Order by creation date (newest first)
-        query = query.order_by(Issue.created_at.desc())
-        
-        # Paginate
-        pagination = query.paginate(
-            page=page,
-            per_page=per_page,
-            error_out=False
-        )
-        
-        issues = [issue.to_dict() for issue in pagination.items]
-        
-        return jsonify({
-            'issues': issues,
-            'pagination': {
-                'page': page,
-                'per_page': per_page,
-                'total': pagination.total,
-                'pages': pagination.pages,
-                'has_next': pagination.has_next,
-                'has_prev': pagination.has_prev
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Error getting issues: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/issues', methods=['POST'])
-@require_auth
-def create_issue(current_user):
-    """Create a new issue"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            logger.warning("Create issue request with no JSON data")
-            return jsonify({'error': 'Request body required'}), 400
-        
-        logger.info(f"Creating issue for user {current_user.email} with data: {data}")
-        
-        # Validate required fields
-        required_fields = ['title', 'category', 'latitude', 'longitude']
-        missing_fields = []
-        for field in required_fields:
-            if field not in data or not data[field]:
-                missing_fields.append(field)
-        
-        if missing_fields:
-            error_msg = f'Missing required fields: {", ".join(missing_fields)}'
-            logger.warning(f"Create issue validation failed: {error_msg}")
-            return jsonify({'error': error_msg}), 400
-        
-        # Validate data types
-        try:
-            latitude = float(data['latitude'])
-            longitude = float(data['longitude'])
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid latitude/longitude values: {e}")
-            return jsonify({'error': 'Invalid latitude or longitude values'}), 400
-        
-        # Validate priority
-        valid_priorities = ['low', 'medium', 'high', 'critical']
-        priority = data.get('priority', 'medium').lower()
-        if priority not in valid_priorities:
-            priority = 'medium'
-        
-        # Create issue
-        issue = Issue(
-            title=data['title'].strip(),
-            description=data.get('description', '').strip(),
-            category=data['category'].strip(),
-            latitude=latitude,
-            longitude=longitude,
-            address=data.get('address', '').strip(),
-            priority=priority.upper(),
-            created_by=current_user.id
-        )
-        
-        # Handle image URLs (can be single URL or array of URLs)
-        image_urls = data.get('image_urls', [])
-        if isinstance(image_urls, str):
-            image_urls = [image_urls]
-        elif not isinstance(image_urls, list):
-            image_urls = []
-        
-        # Also support legacy image_url field
-        if 'image_url' in data and data['image_url']:
-            if data['image_url'] not in image_urls:
-                image_urls.append(data['image_url'])
-        
-        # Filter out empty URLs
-        image_urls = [url for url in image_urls if url and url.strip()]
-        
-        issue.set_image_urls(image_urls)
-        
-        db.session.add(issue)
-        db.session.commit()
-        
-        logger.info(f"Issue created successfully: ID {issue.id} by user {current_user.email}")
-        
-        return jsonify({
-            'message': 'Issue created successfully',
-            'issue': issue.to_dict()
-        }), 201
-        
-    except Exception as e:
-        logger.error(f"Error creating issue: {str(e)}", exc_info=True)
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/issues/<int:issue_id>', methods=['GET'])
-def get_issue(issue_id):
-    """Get a specific issue"""
-    try:
-        issue = Issue.query.get(issue_id)
-        if not issue:
-            return jsonify({'error': 'Issue not found'}), 404
-        return jsonify({'issue': issue.to_dict()})
-    except Exception as e:
-        logger.error(f"Error getting issue {issue_id}: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/issues/<int:issue_id>/status', methods=['PUT'])
-@require_auth
-def update_issue_status(current_user, issue_id):
-    """Update issue status"""
-    try:
-        data = request.get_json()
-        new_status = data.get('status')
-        
-        if not new_status:
-            return jsonify({'error': 'Status is required'}), 400
-        
-        issue = Issue.query.get(issue_id)
-        if not issue:
-            return jsonify({'error': 'Issue not found'}), 404
-            
-        issue.status = new_status
-        issue.updated_at = datetime.utcnow()
-        
-        db.session.commit()
-        
-        logger.info(f"Issue {issue_id} status updated to {new_status} by {current_user.email}")
-        
-        return jsonify({
-            'message': 'Issue status updated successfully',
-            'issue': issue.to_dict()
-        })
-        
-    except Exception as e:
-        logger.error(f"Error updating issue status: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-# ================================
-# Onboarding Routes
-# ================================
-
-@app.route('/api/v1/onboarding/password', methods=['POST'])
-@require_auth
-def set_onboarding_password(current_user):
-    """Set password during onboarding"""
-    try:
-        data = request.get_json()
-        
-        if not data or 'password' not in data:
-            return jsonify({'error': 'Password is required'}), 400
-        
-        password = data['password'].strip()
-        
-        # Validate password
-        if len(password) < 8:
-            return jsonify({'error': 'Password must be at least 8 characters long'}), 400
-        
-        if len(password) > 128:
-            return jsonify({'error': 'Password too long (max 128 characters)'}), 400
-        
-        # Hash password using existing function
-        password_hash = hash_password(password)
-        
-        # Update user
-        current_user.password_hash = password_hash
-        current_user.updated_at = datetime.utcnow()
-        db.session.commit()
-        
-        logger.info(f"Password set for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Password set successfully',
-            'user': current_user.to_dict()
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error setting password: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/onboarding/language', methods=['POST'])
-@require_auth
-def set_onboarding_language(current_user):
-    """Set language preference during onboarding"""
-    try:
-        data = request.get_json()
-        
-        if not data or 'language' not in data:
-            return jsonify({'error': 'Language is required'}), 400
-        
-        language = data['language'].strip().lower()
-        
-        # Validate language
-        supported_languages = ['en', 'ta']  # English, Tamil
-        if language not in supported_languages:
-            return jsonify({
-                'error': 'Unsupported language',
-                'supported_languages': supported_languages
-            }), 400
-        
-        # Update user
-        current_user.language = language
-        current_user.updated_at = datetime.utcnow()
-        db.session.commit()
-        
-        logger.info(f"Language set to {language} for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Language set successfully',
-            'user': current_user.to_dict()
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error setting language: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/onboarding/complete', methods=['POST'])
-@require_auth
-def complete_onboarding(current_user):
-    """Complete the onboarding process"""
-    try:
-        # Validate that required onboarding steps are completed
-        if not current_user.password_hash:
-            return jsonify({'error': 'Password must be set before completing onboarding'}), 400
-        
-        if not current_user.language:
-            return jsonify({'error': 'Language must be set before completing onboarding'}), 400
-        
-        # Mark onboarding as completed
-        current_user.onboarding_completed = True
-        current_user.updated_at = datetime.utcnow()
-        db.session.commit()
-        
-        logger.info(f"Onboarding completed for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Onboarding completed successfully',
-            'user': current_user.to_dict()
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error completing onboarding: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-# ================================
-# Authentication Routes
-# ================================
-
-@app.route('/api/v1/auth/google', methods=['POST'])
-def authenticate_with_google():
-    """Authenticate user with Google OAuth via Supabase"""
-    try:
-        data = request.get_json()
-        if not data or 'id_token' not in data:
-            return jsonify({'error': 'Google ID token is required'}), 400
-        
-        id_token = data['id_token']
-        
-        # Verify the Supabase JWT token
-        user_data = verify_supabase_token(id_token)
-        if not user_data:
-            return jsonify({'error': 'Invalid Google ID token'}), 401
-        
-        # Sync user to database
-        user = sync_user_to_database(user_data)
-        if not user:
-            return jsonify({'error': 'Failed to create user account'}), 500
-        
-        logger.info(f"Google authentication successful for user: {user.email}")
-        
-        return jsonify({
-            'user': user.to_dict(),
-            'token': id_token,  # Return the same token for frontend use
-            'message': 'Authentication successful'
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Google authentication failed: {e}")
-        return jsonify({'error': 'Authentication failed'}), 500
-
-@app.route('/api/v1/auth/test', methods=['GET'])
-@require_auth
-def test_auth(current_user):
-    """Test Supabase authentication endpoint"""
-    return jsonify({
-        'message': 'Authentication successful',
-        'user': current_user.to_dict(),
-        'timestamp': datetime.utcnow().isoformat(),
-        'provider': 'supabase'
-    }), 200
-
-# ================================
-# User Routes
-# ================================
-
-@app.route('/api/v1/users/me', methods=['GET'])
-@require_auth
-def get_current_user(current_user):
-    """Get current user profile"""
-    return jsonify({'user': current_user.to_dict()})
-
-@app.route('/api/v1/debug/auth', methods=['GET'])
-@require_auth
-def debug_auth(current_user):
-    """Debug authentication endpoint"""
-    return jsonify({
-        'message': 'Authentication working correctly',
-        'user': current_user.to_dict(),
-        'timestamp': datetime.utcnow().isoformat(),
-        'headers': dict(request.headers),
-        'endpoint': request.endpoint
-    }), 200
-
-@app.route('/api/v1/users/me', methods=['PUT'])
-@require_auth
-def update_current_user(current_user):
-    """Update current user profile"""
-    try:
-        logger.info(f"Profile update request from user: {current_user.email}")
-        data = request.get_json()
-        logger.info(f"Profile update data: {data}")
-        
-        if not data:
-            logger.warning("Empty request body for profile update")
-            return jsonify({'error': 'Request body required'}), 400
-        
-        # Track what fields are being updated
-        updated_fields = []
-        
-        # Update profile fields
-        # Note: 'name' field is read-only (from Google OAuth), use 'display_name' instead
-        if 'name' in data:
-            return jsonify({
-                'error': 'Name field is read-only', 
-                'message': 'Name comes from Google account. Use display_name field instead.'
-            }), 400
-            
-        if 'display_name' in data:
-            display_name = data['display_name'].strip()
-            if not display_name:
-                return jsonify({'error': 'Display name cannot be empty'}), 400
-            if len(display_name) > 255:
-                return jsonify({'error': 'Display name too long (max 255 characters)'}), 400
-            old_display_name = current_user.display_name
-            current_user.display_name = display_name
-            updated_fields.append(f"display_name: '{old_display_name}' -> '{display_name}'")
-            
-        if 'phone' in data:
-            phone = data['phone'].strip() if data['phone'] else ''
-            if len(phone) > 20:
-                return jsonify({'error': 'Phone number too long (max 20 characters)'}), 400
-            old_phone = current_user.phone
-            current_user.phone = phone
-            updated_fields.append(f"phone: '{old_phone}' -> '{phone}'")
-            
-        if 'photo_url' in data:
-            photo_url = data['photo_url'].strip() if data['photo_url'] else ''
-            if len(photo_url) > 500:
-                return jsonify({'error': 'Photo URL too long (max 500 characters)'}), 400
-            old_photo = current_user.photo_url
-            current_user.photo_url = photo_url
-            updated_fields.append(f"photo_url: '{old_photo}' -> '{photo_url}'")
-            
-        if 'bio' in data:
-            bio = data['bio'].strip() if data['bio'] else ''
-            old_bio = current_user.bio
-            current_user.bio = bio
-            updated_fields.append(f"bio: '{old_bio}' -> '{bio}'")
-        
-        current_user.updated_at = datetime.utcnow()
-        
-        logger.info(f"Updating fields for {current_user.email}: {updated_fields}")
-        
-        # Commit to database
-        db.session.commit()
-        
-        logger.info(f"Profile updated successfully for user: {current_user.email}")
-        logger.info(f"Updated user data: name='{current_user.name}', bio='{current_user.bio}', phone='{current_user.phone}'")
-        
-        return jsonify({
-            'message': 'Profile updated successfully',
-            'user': current_user.to_dict()
-        })
-        
-    except Exception as e:
-        logger.error(f"Error updating user profile: {e}", exc_info=True)
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/users/me/settings', methods=['PUT'])
-@require_auth
-def update_user_settings(current_user):
-    """Update user settings"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({'error': 'Request body required'}), 400
-        
-        # Update settings fields
-        if 'notifications_enabled' in data:
-            current_user.notifications_enabled = bool(data['notifications_enabled'])
-            
-        if 'dark_mode' in data:
-            current_user.dark_mode = bool(data['dark_mode'])
-            
-        if 'anonymous_reporting' in data:
-            current_user.anonymous_reporting = bool(data['anonymous_reporting'])
-            
-        if 'satellite_view' in data:
-            current_user.satellite_view = bool(data['satellite_view'])
-            
-        if 'save_to_gallery' in data:
-            current_user.save_to_gallery = bool(data['save_to_gallery'])
-        
-        current_user.updated_at = datetime.utcnow()
-        db.session.commit()
-        
-        logger.info(f"Settings updated for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Settings updated successfully',
-            'user': current_user.to_dict()
-        })
-        
-    except Exception as e:
-        logger.error(f"Error updating user settings: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/users/me/password', methods=['PUT'])
-@require_auth
-def change_password(current_user):
-    """Change user password (Supabase integration)"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({'error': 'Request body required'}), 400
-        
-        # For Supabase authentication, password changes should be handled on the client side
-        # using Supabase's updateUser method. This endpoint serves as a notification/logging endpoint.
-        
-        # Validate that required fields are present (for logging purposes)
-        if 'current_password' not in data or 'new_password' not in data:
-            return jsonify({
-                'error': 'Current password and new password are required',
-                'message': 'For Supabase users, password changes must be initiated from the client app using Supabase auth methods'
-            }), 400
-        
-        # Since we're using Supabase auth, we can't directly change passwords on the backend
-        # The frontend should use Supabase's updateUser method
-        logger.info(f"Password change request received for user: {current_user.email}")
-        
-        return jsonify({
-            'message': 'Password change must be handled through Supabase client',
-            'instructions': 'Use supabase.auth.updateUser({ password: newPassword }) in your frontend app',
-            'supabase_method': 'updateUser'
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error in password change endpoint: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-# ================================
-# Additional Issue Routes
-# ================================
-
-@app.route('/api/v1/issues/<int:issue_id>', methods=['PUT'])
-@require_auth
-def update_issue(current_user, issue_id):
-    """Update an issue (only by creator or admin)"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({'error': 'Request body required'}), 400
-        
-        issue = Issue.query.get(issue_id)
-        if not issue:
-            return jsonify({'error': 'Issue not found'}), 404
-        
-        # Check if user is the creator (in a real app, you might have admin roles)
-        if issue.created_by != current_user.id:
-            return jsonify({'error': 'Permission denied'}), 403
-        
-        # Update allowed fields
-        if 'title' in data:
-            issue.title = data['title']
-        if 'description' in data:
-            issue.description = data['description']
-        if 'category' in data:
-            issue.category = data['category']
-        if 'priority' in data:
-            issue.priority = data['priority']
-        if 'address' in data:
-            issue.address = data['address']
-        
-        # Handle image URLs update
-        if 'image_urls' in data:
-            image_urls = data['image_urls']
-            if isinstance(image_urls, str):
-                image_urls = [image_urls]
-            elif not isinstance(image_urls, list):
-                image_urls = []
-            issue.set_image_urls(image_urls)
-        elif 'image_url' in data:
-            # Support legacy single image_url
-            if data['image_url']:
-                issue.set_image_urls([data['image_url']])
-            else:
-                issue.set_image_urls([])
-        
-        issue.updated_at = datetime.utcnow()
-        db.session.commit()
-        
-        logger.info(f"Issue {issue_id} updated by user {current_user.email}")
-        
-        return jsonify({
-            'message': 'Issue updated successfully',
-            'issue': issue.to_dict()
-        })
-        
-    except Exception as e:
-        logger.error(f"Error updating issue: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/issues/<int:issue_id>', methods=['DELETE'])
-@require_auth
-def delete_issue(current_user, issue_id):
-    """Delete an issue (only by creator)"""
-    try:
-        issue = Issue.query.get(issue_id)
-        if not issue:
-            return jsonify({'error': 'Issue not found'}), 404
-        
-        # Check if user is the creator
-        if issue.created_by != current_user.id:
-            return jsonify({'error': 'Permission denied'}), 403
-        
-        db.session.delete(issue)
-        db.session.commit()
-        
-        logger.info(f"Issue {issue_id} deleted by user {current_user.email}")
-        
-        return jsonify({'message': 'Issue deleted successfully'})
-        
-    except Exception as e:
-        logger.error(f"Error deleting issue: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/users/<int:user_id>/issues', methods=['GET'])
-def get_user_issues(user_id):
-    """Get issues created by a specific user"""
-    try:
-        # Query parameters
-        page = request.args.get('page', 1, type=int)
-        per_page = min(request.args.get('per_page', 20, type=int), 100)
-        status = request.args.get('status')
-        
-        # Build query
-        query = Issue.query.filter_by(created_by=user_id)
-        
-        if status:
-            query = query.filter(Issue.status == status)
-        
-        # Order by creation date (newest first)
-        query = query.order_by(Issue.created_at.desc())
-        
-        # Paginate
-        pagination = query.paginate(
-            page=page,
-            per_page=per_page,
-            error_out=False
-        )
-        
-        issues = [issue.to_dict() for issue in pagination.items]
-        
-        return jsonify({
-            'issues': issues,
-            'pagination': {
-                'page': page,
-                'per_page': per_page,
-                'total': pagination.total,
-                'pages': pagination.pages,
-                'has_next': pagination.has_next,
-                'has_prev': pagination.has_prev
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Error getting user issues: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/stats', methods=['GET'])
-def get_stats():
-    """Get system statistics"""
-    try:
-        total_issues = Issue.query.count()
-        total_users = User.query.count()
-        
-        # Issues by status
-        open_issues = Issue.query.filter_by(status='OPEN').count()
-        in_progress_issues = Issue.query.filter_by(status='IN_PROGRESS').count()
-        resolved_issues = Issue.query.filter_by(status='RESOLVED').count()
-        closed_issues = Issue.query.filter_by(status='CLOSED').count()
-        
-        # Issues by category
-        categories_stats = {}
-        categories = [
-            'Pothole', 'Street Light', 'Garbage Collection', 'Traffic Signal',
-            'Road Damage', 'Water Leak', 'Sidewalk Issue', 'Graffiti',
-            'Noise Complaint', 'Other'
-        ]
-        
-        for category in categories:
-            count = Issue.query.filter_by(category=category).count()
-            if count > 0:
-                categories_stats[category] = count
-        
-        return jsonify({
-            'total_issues': total_issues,
-            'total_users': total_users,
-            'issues_by_status': {
-                'OPEN': open_issues,
-                'IN_PROGRESS': in_progress_issues,
-                'RESOLVED': resolved_issues,
-                'CLOSED': closed_issues
-            },
-            'issues_by_category': categories_stats,
-            'timestamp': datetime.utcnow().isoformat()
-        })
-        
-    except Exception as e:
-        logger.error(f"Error getting stats: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-# ================================
-# Utility Routes
-# ================================
-
 @app.route('/api/v1/categories', methods=['GET'])
 def get_categories():
-    """Get available issue categories"""
+    """Get all issue categories"""
     categories = [
         'Road Infrastructure',
         'Water & Drainage',
@@ -1949,55 +642,274 @@ def get_categories():
     ]
     return jsonify({'categories': categories})
 
-@app.route('/api/v1/issues/nearby', methods=['GET'])
-def get_nearby_issues():
-    """Get issues near a specific location"""
+# ================================
+# File Upload Routes (Supabase Storage)
+# ================================
+
+@app.route('/api/v1/upload', methods=['POST'])
+@require_auth
+def upload_file(current_user):
+    """Upload file to Supabase Storage"""
     try:
-        # Get location parameters
-        lat = request.args.get('latitude', type=float)
-        lng = request.args.get('longitude', type=float)
-        radius = request.args.get('radius', 5.0, type=float)  # Default 5km radius
+        if not storage_service:
+            return jsonify({'error': 'File upload service not available'}), 503
         
-        if lat is None or lng is None:
-            return jsonify({'error': 'latitude and longitude parameters are required'}), 400
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
         
-        # Simple distance calculation (for more accuracy, use PostGIS in production)
-        # This is a basic implementation using Haversine formula approximation
-        lat_range = radius / 111.0  # Rough conversion: 1 degree ≈ 111 km
-        lng_range = radius / (111.0 * abs(lat) / 90.0) if lat != 0 else radius / 111.0
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
         
-        # Query issues within the bounding box
-        issues = Issue.query.filter(
-            Issue.latitude.between(lat - lat_range, lat + lat_range),
-            Issue.longitude.between(lng - lng_range, lng + lng_range)
-        ).order_by(Issue.created_at.desc()).limit(50).all()
+        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'}
+        file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+        
+        if file_extension not in allowed_extensions:
+            return jsonify({'error': 'Invalid file type'}), 400
+        
+        file.seek(0, 2)
+        file_size = file.tell()
+        file.seek(0)
+        
+        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp'}
+        max_size = 50 * 1024 * 1024 if file_extension in video_extensions else 10 * 1024 * 1024
+        
+        if file_size > max_size:
+            return jsonify({'error': f'File too large. Max: {"50MB" if file_extension in video_extensions else "10MB"}'}), 400
+        
+        file_data = file.read()
+        content_type = f'video/{file_extension}' if file_extension in video_extensions else file.content_type or f'image/{file_extension}'
+        
+        file_url, error = storage_service.upload_file(file_data, file.filename, content_type)
+        
+        if error:
+            return jsonify({'error': f'Upload failed: {error}'}), 500
+        
+        logger.info(f"File uploaded by {current_user.email}: {file_url}")
         
         return jsonify({
-            'issues': [issue.to_dict() for issue in issues],
-            'center': {'latitude': lat, 'longitude': lng},
-            'radius_km': radius,
-            'count': len(issues)
-        })
-        
+            'message': 'File uploaded successfully',
+            'file_url': file_url,
+            'file_name': file.filename,
+            'file_size': file_size,
+            'file_type': 'video' if file_extension in video_extensions else 'image'
+        }), 201
     except Exception as e:
-        logger.error(f"Error getting nearby issues: {e}")
+        logger.error(f"Upload error: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/api/v1/status-options', methods=['GET'])
-def get_status_options():
-    """Get available issue status options"""
-    statuses = [
-        {'value': 'OPEN', 'label': 'Open', 'description': 'Issue reported and awaiting review'},
-        {'value': 'IN_PROGRESS', 'label': 'In Progress', 'description': 'Issue is being worked on'},
-        {'value': 'RESOLVED', 'label': 'Resolved', 'description': 'Issue has been fixed'},
-        {'value': 'CLOSED', 'label': 'Closed', 'description': 'Issue is closed (resolved or rejected)'},
-        {'value': 'REJECTED', 'label': 'Rejected', 'description': 'Issue was rejected or invalid'}
-    ]
-    return jsonify({'statuses': statuses})
+@app.route('/api/v1/issues/upload-media', methods=['POST'])
+@require_auth
+def upload_issue_media(current_user):
+    """Upload media files for issues"""
+    try:
+        if not storage_service:
+            return jsonify({'error': 'File upload service not available'}), 503
+        
+        if 'files' not in request.files:
+            return jsonify({'error': 'No files provided'}), 400
+        
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No files selected'}), 400
+        
+        if len(files) > 8:
+            return jsonify({'error': 'Maximum 8 files allowed'}), 400
+        
+        uploaded_files = []
+        errors = []
+        total_size = 0
+        
+        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'mp4', 'mov', 'avi', 'mkv', 'webm'}
+        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'webm'}
+        
+        for file in files:
+            if file.filename == '':
+                continue
+            
+            try:
+                file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+                
+                if file_extension not in allowed_extensions:
+                    errors.append(f"{file.filename}: Invalid file type")
+                    continue
+                
+                file.seek(0, 2)
+                file_size = file.tell()
+                file.seek(0)
+                
+                max_size = 100 * 1024 * 1024 if file_extension in video_extensions else 15 * 1024 * 1024
+                
+                if file_size > max_size:
+                    errors.append(f"{file.filename}: File too large")
+                    continue
+                
+                total_size += file_size
+                
+                if total_size > 200 * 1024 * 1024:
+                    errors.append(f"{file.filename}: Total size exceeds 200MB")
+                    continue
+                
+                file_data = file.read()
+                content_type = f'video/{file_extension}' if file_extension in video_extensions else file.content_type or f'image/{file_extension}'
+                
+                file_url, error = storage_service.upload_file(file_data, f"issue_media_{file.filename}", content_type)
+                
+                if error:
+                    errors.append(f"{file.filename}: Upload failed - {error}")
+                else:
+                    uploaded_files.append({
+                        'file_url': file_url,
+                        'file_name': file.filename,
+                        'file_size': file_size,
+                        'file_type': 'video' if file_extension in video_extensions else 'image'
+                    })
+            except Exception as e:
+                errors.append(f"{file.filename}: {str(e)}")
+        
+        media_urls = [f['file_url'] for f in uploaded_files]
+        
+        logger.info(f"Issue media uploaded by {current_user.email}: {len(uploaded_files)} files")
+        
+        return jsonify({
+            'message': f'{len(uploaded_files)} files uploaded successfully',
+            'media_urls': media_urls,
+            'uploaded_files': uploaded_files,
+            'errors': errors,
+            'total_size': total_size,
+            'summary': {
+                'images': len([f for f in uploaded_files if f['file_type'] == 'image']),
+                'videos': len([f for f in uploaded_files if f['file_type'] == 'video']),
+                'total_files': len(uploaded_files)
+            }
+        }), 201 if uploaded_files else 400
+    except Exception as e:
+        logger.error(f"Upload error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
-# Upvote Routes
+# Issue Routes
 # ================================
+
+@app.route('/api/v1/issues', methods=['GET'])
+def get_issues():
+    """Get all issues with filtering"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 20, type=int), 100)
+        category = request.args.get('category')
+        status = request.args.get('status')
+        search = request.args.get('search')
+        
+        query = Issue.query
+        
+        if search:
+            search_term = f"%{search}%"
+            query = query.filter(db.or_(
+                Issue.title.ilike(search_term),
+                Issue.description.ilike(search_term),
+                Issue.address.ilike(search_term)
+            ))
+        
+        if category and category.lower() != 'all':
+            query = query.filter(Issue.category == category)
+        
+        if status:
+            query = query.filter(Issue.status == status)
+        
+        query = query.order_by(Issue.created_at.desc())
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        
+        issues = [issue.to_dict() for issue in pagination.items]
+        
+        return jsonify({
+            'issues': issues,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': pagination.total,
+                'pages': pagination.pages
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting issues: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues', methods=['POST'])
+@require_auth
+def create_issue(current_user):
+    """Create a new issue"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        required_fields = ['title', 'category', 'latitude', 'longitude']
+        missing = [f for f in required_fields if f not in data or not data[f]]
+        
+        if missing:
+            return jsonify({'error': f'Missing fields: {", ".join(missing)}'}), 400
+        
+        try:
+            latitude = float(data['latitude'])
+            longitude = float(data['longitude'])
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid latitude/longitude'}), 400
+        
+        priority = data.get('priority', 'medium').lower()
+        if priority not in ['low', 'medium', 'high', 'critical']:
+            priority = 'medium'
+        
+        issue = Issue(
+            title=data['title'].strip(),
+            description=data.get('description', '').strip(),
+            category=data['category'].strip(),
+            latitude=latitude,
+            longitude=longitude,
+            address=data.get('address', '').strip(),
+            priority=priority.upper(),
+            created_by=current_user.id
+        )
+        
+        image_urls = data.get('image_urls', [])
+        if isinstance(image_urls, str):
+            image_urls = [image_urls]
+        elif not isinstance(image_urls, list):
+            image_urls = []
+        
+        if 'image_url' in data and data['image_url']:
+            if data['image_url'] not in image_urls:
+                image_urls.append(data['image_url'])
+        
+        image_urls = [url for url in image_urls if url and url.strip()]
+        issue.set_image_urls(image_urls)
+        
+        db.session.add(issue)
+        db.session.commit()
+        
+        logger.info(f"Issue created: ID {issue.id} by {current_user.email}")
+        
+        return jsonify({
+            'message': 'Issue created successfully',
+            'issue': issue.to_dict()
+        }), 201
+    except Exception as e:
+        logger.error(f"Error creating issue: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/issues/<int:issue_id>', methods=['GET'])
+def get_issue(issue_id):
+    """Get a specific issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        return jsonify({'issue': issue.to_dict()})
+    except Exception as e:
+        logger.error(f"Error getting issue: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/v1/issues/<int:issue_id>/upvote', methods=['POST'])
 @require_auth
@@ -2008,284 +920,84 @@ def upvote_issue(current_user, issue_id):
         if not issue:
             return jsonify({'error': 'Issue not found'}), 404
         
-        # Check if user already upvoted (we'll need to create a table for this)
-        # For now, we'll just increment the upvotes count
         issue.upvotes += 1
         db.session.commit()
         
-        logger.info(f"Issue {issue_id} upvoted by user {current_user.email}")
-        
         return jsonify({
-            'message': 'Issue upvoted successfully',
+            'message': 'Issue upvoted',
             'upvotes': issue.upvotes
         })
-        
     except Exception as e:
         logger.error(f"Error upvoting issue: {e}")
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/api/v1/issues/<int:issue_id>/upvote', methods=['DELETE'])
-@require_auth
-def remove_upvote(current_user, issue_id):
-    """Remove upvote from an issue"""
-    try:
-        issue = Issue.query.get(issue_id)
-        if not issue:
-            return jsonify({'error': 'Issue not found'}), 404
-        
-        # Prevent negative upvotes
-        if issue.upvotes > 0:
-            issue.upvotes -= 1
-        
-        db.session.commit()
-        
-        logger.info(f"Upvote removed from issue {issue_id} by user {current_user.email}")
-        
-        return jsonify({
-            'message': 'Upvote removed successfully',
-            'upvotes': issue.upvotes
-        })
-        
-    except Exception as e:
-        logger.error(f"Error removing upvote: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/issues/<int:issue_id>/upvotes', methods=['GET'])
-def get_issue_upvotes(issue_id):
-    """Get upvote count and user's upvote status for an issue"""
-    try:
-        issue = Issue.query.get(issue_id)
-        if not issue:
-            return jsonify({'error': 'Issue not found'}), 404
-        
-        # For now, we'll return false for user_upvoted since we don't have the tracking table yet
-        # In a full implementation, you'd check if the current user has upvoted this issue
-        user_upvoted = False
-        
-        return jsonify({
-            'upvotes': issue.upvotes,
-            'user_upvoted': user_upvoted
-        })
-        
-    except Exception as e:
-        logger.error(f"Error getting upvotes: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/users/<int:user_id>/profile', methods=['GET'])
-def get_user_profile(user_id):
-    """Get user profile information"""
-    try:
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        return jsonify({'user': user.to_dict()})
-        
-    except Exception as e:
-        logger.error(f"Error getting user profile: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
 # ================================
-# Comment Routes
+# User Routes
 # ================================
 
-@app.route('/api/v1/issues/<int:issue_id>/comments', methods=['GET'])
-def get_issue_comments(issue_id):
-    """Get all comments for a specific issue"""
-    try:
-        # Check if issue exists
-        issue = Issue.query.get(str(issue_id))  # Convert to string for UUID lookup
-        if not issue:
-            return jsonify({'error': 'Issue not found'}), 404
-        
-        # Query parameters
-        page = request.args.get('page', 1, type=int)
-        per_page = min(request.args.get('per_page', 20, type=int), 100)
-        
-        # Get comments for the issue (convert issue_id to string)
-        query = Comment.query.filter_by(issue_id=str(issue_id)).order_by(Comment.created_at.asc())
-        
-        # Paginate
-        pagination = query.paginate(
-            page=page,
-            per_page=per_page,
-            error_out=False
-        )
-        
-        comments = [comment.to_dict() for comment in pagination.items]
-        
-        return jsonify({
-            'comments': comments,
-            'pagination': {
-                'page': page,
-                'per_page': per_page,
-                'total': pagination.total,
-                'pages': pagination.pages,
-                'has_next': pagination.has_next,
-                'has_prev': pagination.has_prev
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Error getting comments for issue {issue_id}: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/issues/<int:issue_id>/comments', methods=['POST'])
+@app.route('/api/v1/users/me', methods=['GET'])
 @require_auth
-def create_comment(current_user, issue_id):
-    """Create a new comment on an issue"""
+def get_current_user(current_user):
+    """Get current user profile"""
+    return jsonify({'user': current_user.to_dict()})
+
+@app.route('/api/v1/users/me', methods=['PUT'])
+@require_auth
+def update_current_user(current_user):
+    """Update current user profile"""
     try:
-        # Check if issue exists
-        issue = Issue.query.get(str(issue_id))  # Convert to string for UUID lookup
-        if not issue:
-            return jsonify({'error': 'Issue not found'}), 404
-        
         data = request.get_json()
-        if not data or not data.get('content'):
-            return jsonify({'error': 'Comment content is required'}), 400
         
-        content = data['content'].strip()
-        if not content:
-            return jsonify({'error': 'Comment content cannot be empty'}), 400
+        if 'display_name' in data:
+            current_user.display_name = data['display_name'].strip()
+        if 'bio' in data:
+            current_user.bio = data['bio'].strip()
+        if 'phone' in data:
+            current_user.phone = data['phone'].strip()
         
-        # Create comment with UUID
-        import uuid
-        comment = Comment(
-            id=str(uuid.uuid4()),  # Generate UUID for comment ID
-            text=content,
-            issue_id=str(issue_id),  # Convert to string
-            user_id=str(current_user.id)  # Convert to string
-        )
-        
-        db.session.add(comment)
+        current_user.updated_at = datetime.utcnow()
         db.session.commit()
         
-        logger.info(f"Comment created on issue {issue_id} by user {current_user.email}")
-        
         return jsonify({
-            'message': 'Comment created successfully',
-            'comment': comment.to_dict()
-        }), 201
-        
-    except Exception as e:
-        logger.error(f"Error creating comment: {e}")
-        db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/v1/comments/<comment_id>', methods=['PUT'])
-@require_auth
-def update_comment(current_user, comment_id):
-    """Update a comment (only by the comment author)"""
-    try:
-        comment = Comment.query.get(comment_id)  # comment_id is already a string
-        if not comment:
-            return jsonify({'error': 'Comment not found'}), 404
-        
-        # Check if user is the comment author (convert user IDs to string for comparison)
-        if comment.user_id != str(current_user.id):
-            return jsonify({'error': 'Permission denied'}), 403
-        
-        data = request.get_json()
-        if not data or not data.get('content'):
-            return jsonify({'error': 'Comment content is required'}), 400
-        
-        content = data['content'].strip()
-        if not content:
-            return jsonify({'error': 'Comment content cannot be empty'}), 400
-        
-        comment.text = content
-        # Note: Not setting updated_at since column doesn't exist in database
-        
-        db.session.commit()
-        
-        logger.info(f"Comment {comment_id} updated by user {current_user.email}")
-        
-        return jsonify({
-            'message': 'Comment updated successfully',
-            'comment': comment.to_dict()
+            'message': 'Profile updated',
+            'user': current_user.to_dict()
         })
-        
     except Exception as e:
-        logger.error(f"Error updating comment: {e}")
+        logger.error(f"Error updating user: {e}")
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/api/v1/comments/<comment_id>', methods=['DELETE'])
+@app.route('/api/v1/users/me/settings', methods=['PUT'])
 @require_auth
-def delete_comment(current_user, comment_id):
-    """Delete a comment (only by the comment author)"""
+def update_user_settings(current_user):
+    """Update user settings"""
     try:
-        comment = Comment.query.get(comment_id)  # comment_id is already a string
-        if not comment:
-            return jsonify({'error': 'Comment not found'}), 404
+        data = request.get_json()
         
-        # Check if user is the comment author (convert user IDs to string for comparison)
-        if comment.user_id != str(current_user.id):
-            return jsonify({'error': 'Permission denied'}), 403
+        if 'notifications_enabled' in data:
+            current_user.notifications_enabled = bool(data['notifications_enabled'])
+        if 'dark_mode' in data:
+            current_user.dark_mode = bool(data['dark_mode'])
+        if 'anonymous_reporting' in data:
+            current_user.anonymous_reporting = bool(data['anonymous_reporting'])
         
-        db.session.delete(comment)
+        current_user.updated_at = datetime.utcnow()
         db.session.commit()
         
-        logger.info(f"Comment {comment_id} deleted by user {current_user.email}")
-        
-        return jsonify({'message': 'Comment deleted successfully'})
-        
+        return jsonify({
+            'message': 'Settings updated',
+            'user': current_user.to_dict()
+        })
     except Exception as e:
-        logger.error(f"Error deleting comment: {e}")
+        logger.error(f"Error updating settings: {e}")
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/api/v1/priority-options', methods=['GET'])
-def get_priority_options():
-    """Get available issue priority options"""
-    priorities = [
-        {'value': 'LOW', 'label': 'Low', 'description': 'Non-urgent issue'},
-        {'value': 'MEDIUM', 'label': 'Medium', 'description': 'Standard priority'},
-        {'value': 'HIGH', 'label': 'High', 'description': 'Important issue requiring attention'},
-        {'value': 'URGENT', 'label': 'Urgent', 'description': 'Critical issue requiring immediate attention'}
-    ]
-    return jsonify({'priority_options': priorities})
-
 # ================================
-# Error Handlers
+# Run Application
 # ================================
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Not found'}), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    db.session.rollback()
-    return jsonify({'error': 'Internal server error'}), 500
-
-# ================================
-# Initialize Application
-# ================================
-
-def create_tables():
-    """Create database tables"""
-    with app.app_context():
-        try:
-            db.create_all()
-            logger.info("Database tables created successfully")
-        except Exception as e:
-            logger.error(f"Error creating tables: {e}")
-            # Don't fail startup if validation is skipped
-            if os.environ.get('SKIP_VALIDATION') != 'true':
-                raise
-            else:
-                logger.warning("Database table creation failed but continuing (validation skipped)")
 
 if __name__ == '__main__':
-    # Create tables
-    create_tables()
-    
-    # Run the app
     port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_ENV') == 'development'
-    
-    logger.info(f"Starting CivicFix Backend on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=debug)
+    app.run(host='0.0.0.0', port=port, debug=False)

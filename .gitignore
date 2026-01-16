@@ -88,11 +88,7 @@ verify_*.py
 *.ps1
 
 # Documentation (keep only EC2 specific)
-DEPLOYMENT_*.md
-PRODUCTION_*.md
-SETUP_*.md
-STARTUP_*.md
-WINDOWS_*.md
+*.md
 
 # EC2 deployment - keep these essential files but they should not contain secrets
 !deploy_ec2.sh

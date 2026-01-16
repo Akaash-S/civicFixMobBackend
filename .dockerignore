@@ -11,7 +11,6 @@ __pycache__
 *.pyo
 *.pyd
 .Python
-env
 pip-log.txt
 pip-delete-this-directory.txt
 .tox
@@ -48,9 +47,9 @@ env/
 ehthumbs.db
 Thumbs.db
 
-# Documentation
+# Documentation (exclude from image)
 *.md
-docs/
+!README.md
 
 # Logs
 logs/
@@ -71,32 +70,25 @@ docker-compose*
 *.bak
 *.old
 
-# Node modules (if any)
-node_modules/
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-
-# Database files
+# Database files (local development only)
 *.db
 *.sqlite
 *.sqlite3
 instance/
 
-# Test files (exclude most, keep essential ones)
-test-*.py
-debug-*.py
-deploy-*.py
-quick-*.py
-verify-*.py
-check-*.py
-diagnose-*.py
+# Deployment scripts (not needed in container)
+deploy.sh
+deploy-*.sh
+setup-*.sh
 
-# Keep essential files (override exclusions)
-!test_docker_startup.py
-!test_auth_quick.py
-!test_user_sync.py
-!validate_aws_setup.py
-!migrate_database.py
+# Test files (not needed in production container)
+test_*.py
+debug_*.py
+
+# Keep only essential files in container:
+# - app.py (main application)
+# - init_db.py (database initialization)
+# - startup.py (startup script)
+# - requirements.txt (dependencies)
+# - .env (environment variables)
+# - nginx.conf (nginx configuration)

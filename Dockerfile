@@ -1,4 +1,4 @@
-# CivicFix Backend - Production Dockerfile
+# CivicFix Backend - Neon PostgreSQL + Supabase Storage
 FROM python:3.11-slim
 
 # Set environment variables
@@ -20,53 +20,23 @@ RUN apt-get update && apt-get install -y \
 # Create app directory
 WORKDIR /app
 
-# Install Python dependencies individually to avoid conflicts
-RUN pip install --upgrade pip
-
-# Core Flask packages
-RUN pip install Flask==3.0.0
-RUN pip install Flask-SQLAlchemy==3.1.1
-RUN pip install Flask-Migrate==4.0.5
-RUN pip install Flask-CORS==4.0.0
-
-# Database
-RUN pip install psycopg2-binary==2.9.9
-
-# AWS (let it resolve dependencies automatically)
-RUN pip install boto3
-
-# Authentication & Security
-RUN pip install PyJWT
-RUN pip install cryptography
-
-# Utilities
-RUN pip install python-dotenv
-RUN pip install requests
-RUN pip install gunicorn
-
-# Optional packages (install if possible, continue if not)
-RUN pip install firebase-admin || echo "Firebase admin not installed"
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY app.py .
-COPY startup.sh .
+COPY init_db.py .
+COPY startup.py .
+COPY .env .env
 
-# Copy utility scripts
-COPY validate_aws_setup.py .
-COPY migrate_database.py .
-COPY test_docker_startup.py .
-
-# Copy test files
-COPY test_auth_quick.py .
-COPY test_user_sync.py .
-
-# Copy environment file
-COPY .env ./
+# Make startup script executable
+RUN chmod +x startup.py
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app && \
-    chmod +x startup.sh
+    chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
@@ -78,5 +48,5 @@ EXPOSE $PORT
 HEALTHCHECK --interval=30s --timeout=15s --start-period=90s --retries=5 \
     CMD curl -f http://localhost:$PORT/health || exit 1
 
-# Use startup script as entrypoint
-CMD ["./startup.sh"]
+# Use Python startup script as entrypoint
+CMD ["python", "startup.py"]
