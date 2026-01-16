@@ -1027,6 +1027,112 @@ def authenticate_google():
         logger.error(f"Error authenticating with Google: {e}")
         return jsonify({'error': 'Authentication failed'}), 500
 
+@app.route('/api/v1/auth/check-user', methods=['POST'])
+def check_user_exists():
+    """Check if user exists in database without creating them"""
+    try:
+        data = request.get_json()
+        id_token = data.get('id_token')
+        
+        if not id_token:
+            return jsonify({'error': 'ID token is required'}), 400
+        
+        # Verify the token with Supabase
+        token_data = verify_supabase_token(id_token)
+        if not token_data:
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        email = token_data.get('email')
+        if not email:
+            return jsonify({'error': 'Email not found in token'}), 400
+        
+        # Check if user exists in database
+        user = User.query.filter_by(email=email).first()
+        
+        if user:
+            # User exists - return user data and indicate they need password verification
+            return jsonify({
+                'exists': True,
+                'has_password': bool(user.password_hash),
+                'user': user.to_dict(),
+                'token': id_token
+            })
+        else:
+            # User doesn't exist - they need to create account
+            return jsonify({
+                'exists': False,
+                'has_password': False,
+                'email': email,
+                'name': token_data.get('name', ''),
+                'photo_url': token_data.get('picture', ''),
+                'firebase_uid': token_data.get('sub', ''),
+                'token': id_token
+            })
+    except Exception as e:
+        logger.error(f"Error checking user: {e}")
+        return jsonify({'error': 'Failed to check user'}), 500
+
+@app.route('/api/v1/auth/create-user', methods=['POST'])
+def create_user_with_password():
+    """Create new user with password and language"""
+    try:
+        data = request.get_json()
+        id_token = data.get('id_token')
+        password = data.get('password')
+        language = data.get('language', 'en')
+        
+        if not id_token:
+            return jsonify({'error': 'ID token is required'}), 400
+        
+        if not password:
+            return jsonify({'error': 'Password is required'}), 400
+        
+        if len(password) < 8:
+            return jsonify({'error': 'Password must be at least 8 characters'}), 400
+        
+        # Verify the token with Supabase
+        token_data = verify_supabase_token(id_token)
+        if not token_data:
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        email = token_data.get('email')
+        if not email:
+            return jsonify({'error': 'Email not found in token'}), 400
+        
+        # Check if user already exists
+        existing_user = User.query.filter_by(email=email).first()
+        if existing_user:
+            return jsonify({'error': 'User already exists'}), 400
+        
+        # Create new user
+        new_user = User(
+            firebase_uid=token_data.get('sub', ''),
+            email=email,
+            name=token_data.get('name', email.split('@')[0]),
+            display_name=token_data.get('name', email.split('@')[0]),
+            photo_url=token_data.get('picture', ''),
+            password_hash=hash_password(password),
+            language=language,
+            onboarding_completed=True,  # Mark as completed since they set password and language
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        
+        db.session.add(new_user)
+        db.session.commit()
+        
+        logger.info(f"New user created: {new_user.email}")
+        
+        return jsonify({
+            'message': 'User created successfully',
+            'user': new_user.to_dict(),
+            'token': id_token
+        })
+    except Exception as e:
+        logger.error(f"Error creating user: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Failed to create user'}), 500
+
 @app.route('/api/v1/auth/test', methods=['GET'])
 @require_auth
 def test_auth(current_user):
