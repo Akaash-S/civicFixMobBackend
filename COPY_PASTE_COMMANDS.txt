@@ -15,12 +15,12 @@ docker-compose stop nginx
 COMMAND 2: Generate SSL Certificate (REPLACE YOUR_EMAIL!)
 ================================================================================
 
-docker-compose run --rm certbot certonly --standalone -d civicfix-server.asolvitra.tech -d www.civicfix-server.asolvitra.tech --email YOUR_EMAIL_HERE --agree-tos --no-eff-email
+docker-compose run --rm certbot certonly --standalone -d civicfix-server.asolvitra.tech --email YOUR_EMAIL_HERE --agree-tos --no-eff-email
 
 ⚠️ IMPORTANT: Replace YOUR_EMAIL_HERE with your actual email!
 
 Example:
-docker-compose run --rm certbot certonly --standalone -d civicfix-server.asolvitra.tech -d www.civicfix-server.asolvitra.tech --email admin@asolvitra.tech --agree-tos --no-eff-email
+docker-compose run --rm certbot certonly --standalone -d civicfix-server.asolvitra.tech --email admin@asolvitra.tech --agree-tos --no-eff-email
 
 ================================================================================
 COMMAND 3: Restart Services

@@ -29,7 +29,6 @@ print_header() { echo -e "\n${BLUE}========================================${NC}
 ################################################################################
 
 DOMAIN="civicfix-server.asolvitra.tech"
-WWW_DOMAIN="www.civicfix-server.asolvitra.tech"
 EMAIL=""
 
 ################################################################################
@@ -39,7 +38,6 @@ EMAIL=""
 print_header "CivicFix Backend Deployment with SSL"
 
 print_info "Domain: $DOMAIN"
-print_info "WWW: $WWW_DOMAIN"
 echo ""
 
 # Check if running as root
@@ -193,7 +191,6 @@ echo ""
 # Generate certificate
 if docker-compose run --rm certbot certonly --standalone \
     -d $DOMAIN \
-    -d $WWW_DOMAIN \
     --email $EMAIL \
     --agree-tos \
     --no-eff-email \
@@ -345,7 +342,6 @@ echo ""
 
 print_info "🌐 Your URLs:"
 echo "  • HTTPS: https://$DOMAIN"
-echo "  • WWW:   https://$WWW_DOMAIN"
 echo "  • API:   https://$DOMAIN/api/v1"
 echo ""
 
