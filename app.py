@@ -1080,6 +1080,34 @@ def set_onboarding_password(current_user):
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
+@app.route('/api/v1/auth/verify-password', methods=['POST'])
+@require_auth
+def verify_user_password(current_user):
+    """Verify user password for login"""
+    try:
+        data = request.get_json()
+        password = data.get('password')
+        
+        if not password:
+            return jsonify({'error': 'Password is required'}), 400
+        
+        # Check if user has password set
+        if not current_user.password_hash:
+            return jsonify({'error': 'Password not set for this account'}), 400
+        
+        # Verify password
+        if not verify_password(password, current_user.password_hash):
+            return jsonify({'error': 'Invalid password'}), 401
+        
+        return jsonify({
+            'message': 'Password verified successfully',
+            'verified': True,
+            'user': current_user.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Error verifying password: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
 @app.route('/api/v1/onboarding/language', methods=['POST'])
 @require_auth
 def set_onboarding_language(current_user):
