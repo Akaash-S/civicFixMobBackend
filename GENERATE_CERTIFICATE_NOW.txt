@@ -1,0 +1,89 @@
+================================================================================
+🔒 GENERATE SSL CERTIFICATE NOW
+================================================================================
+
+Your nginx is configured for HTTPS but the certificate doesn't exist yet.
+This is normal! Just generate the certificate and restart.
+
+================================================================================
+OPTION 1: AUTOMATED (RECOMMENDED)
+================================================================================
+
+./deploy-with-ssl.sh
+
+This handles everything automatically.
+
+================================================================================
+OPTION 2: MANUAL (3 COMMANDS)
+================================================================================
+
+# 1. Stop services
+docker-compose down
+
+# 2. Generate certificate (REPLACE YOUR_EMAIL!)
+docker-compose run --rm certbot certonly --standalone -d civicfix-server.asolvitra.tech --email YOUR_EMAIL --agree-tos --no-eff-email
+
+# 3. Start services
+docker-compose up -d
+
+================================================================================
+EXAMPLE WITH EMAIL
+================================================================================
+
+docker-compose down
+docker-compose run --rm certbot certonly --standalone -d civicfix-server.asolvitra.tech --email admin@asolvitra.tech --agree-tos --no-eff-email
+docker-compose up -d
+
+================================================================================
+VERIFY CERTIFICATE CREATED
+================================================================================
+
+docker-compose run --rm certbot certificates
+
+Should show:
+  Certificate Name: civicfix-server.asolvitra.tech
+  Domains: civicfix-server.asolvitra.tech
+  Certificate Path: /etc/letsencrypt/live/civicfix-server.asolvitra.tech/fullchain.pem
+
+================================================================================
+TEST HTTPS WORKS
+================================================================================
+
+curl https://civicfix-server.asolvitra.tech/health
+
+Expected: {"status": "healthy"}
+
+================================================================================
+WHY THIS ERROR HAPPENED
+================================================================================
+
+Your nginx.conf is configured for HTTPS:
+  ssl_certificate /etc/letsencrypt/live/.../fullchain.pem;
+
+But the certificate file doesn't exist yet because certbot hasn't run.
+
+This is the correct setup order:
+  1. Configure nginx for HTTPS ✅ (done)
+  2. Generate SSL certificate ⏳ (do this now)
+  3. Start nginx ⏳ (will work after step 2)
+
+================================================================================
+QUICK FIX
+================================================================================
+
+Run ONE of these:
+
+# Automated
+./deploy-with-ssl.sh
+
+# OR Manual
+docker-compose down && docker-compose run --rm certbot certonly --standalone -d civicfix-server.asolvitra.tech --email YOUR_EMAIL --agree-tos --no-eff-email && docker-compose up -d
+
+================================================================================
+AFTER CERTIFICATE IS GENERATED
+================================================================================
+
+Nginx will start successfully and your backend will be live at:
+https://civicfix-server.asolvitra.tech
+
+================================================================================

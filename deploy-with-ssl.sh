@@ -129,6 +129,14 @@ fi
 
 print_header "Step 3: Building Backend"
 
+# Check if services are already running
+if docker-compose ps | grep -q "Up"; then
+    print_warning "Services are already running"
+    print_info "Stopping services first..."
+    docker-compose down
+    sleep 2
+fi
+
 print_info "Building Docker images..."
 docker-compose build
 
