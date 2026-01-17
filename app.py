@@ -1099,6 +1099,12 @@ def check_user_exists():
         user = User.query.filter_by(email=email).first()
         
         if user:
+            # Log detailed user state for debugging
+            logger.info(f"User check for: {email} (ID: {user.id})")
+            logger.info(f"Password hash exists: {bool(user.password_hash)}")
+            logger.info(f"Password hash length: {len(user.password_hash) if user.password_hash else 0}")
+            logger.info(f"Onboarding completed: {user.onboarding_completed}")
+            
             # User exists - return user data and indicate they need password verification
             return jsonify({
                 'exists': True,
@@ -1215,24 +1221,42 @@ def set_onboarding_password(current_user):
         data = request.get_json()
         password = data.get('password')
         
+        logger.info(f"Setting password for user: {current_user.email} (ID: {current_user.id})")
+        
         if not password:
             return jsonify({'error': 'Password is required'}), 400
         
         if len(password) < 8:
             return jsonify({'error': 'Password must be at least 8 characters'}), 400
         
+        # Check current password state
+        logger.info(f"Current password_hash state: {bool(current_user.password_hash)}")
+        
         # Hash and store password (for local auth if needed)
-        current_user.password_hash = hash_password(password)
+        hashed_password = hash_password(password)
+        logger.info(f"Generated password hash length: {len(hashed_password)}")
+        
+        current_user.password_hash = hashed_password
         current_user.onboarding_completed = True  # Mark onboarding as completed when password is set
         current_user.updated_at = datetime.utcnow()
+        
+        # Commit the transaction
         db.session.commit()
+        logger.info(f"Password committed to database for user: {current_user.email}")
+        
+        # Verify the password was saved by re-querying the user
+        updated_user = User.query.get(current_user.id)
+        logger.info(f"Verification - User password_hash exists: {bool(updated_user.password_hash)}")
+        logger.info(f"Verification - Onboarding completed: {updated_user.onboarding_completed}")
         
         return jsonify({
             'message': 'Password set successfully',
-            'user': current_user.to_dict()
+            'user': updated_user.to_dict()
         })
     except Exception as e:
         logger.error(f"Error setting onboarding password: {e}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        logger.error(f"Exception details: {str(e)}")
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
 
