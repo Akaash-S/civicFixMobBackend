@@ -137,21 +137,34 @@ class SupabaseStorageService:
             file_extension = file_name.split('.')[-1] if '.' in file_name else ''
             unique_filename = f"issues/{uuid.uuid4()}.{file_extension}" if file_extension else f"issues/{uuid.uuid4()}"
             
-            # Upload file to Supabase Storage
+            logger.info(f"Uploading file to Supabase Storage: {unique_filename}, size: {len(file_data)} bytes, type: {content_type}")
+            
+            # Upload file to Supabase Storage with proper options
             result = self.storage.from_(self.bucket_name).upload(
                 path=unique_filename,
                 file=file_data,
-                file_options={"content-type": content_type, "upsert": "true"}
+                file_options={
+                    "content-type": content_type, 
+                    "upsert": "true",
+                    "cache-control": "3600"
+                }
             )
+            
+            # Check if upload was successful
+            if hasattr(result, 'error') and result.error:
+                logger.error(f"Supabase upload error: {result.error}")
+                return None, str(result.error)
             
             # Generate public URL
             file_url = self.storage.from_(self.bucket_name).get_public_url(unique_filename)
             
-            logger.info(f"File uploaded to Supabase Storage: {unique_filename}")
+            logger.info(f"✅ File uploaded successfully to Supabase Storage: {unique_filename}")
+            logger.info(f"📎 Public URL: {file_url}")
             return file_url, None
             
         except Exception as e:
-            logger.error(f"Supabase Storage upload failed: {e}")
+            logger.error(f"❌ Supabase Storage upload failed: {e}")
+            logger.error(f"Error details: {type(e).__name__}: {str(e)}")
             return None, str(e)
     
     def delete_file(self, file_url):
@@ -704,26 +717,33 @@ def upload_issue_media(current_user):
     """Upload media files for issues"""
     try:
         if not storage_service:
+            logger.error("Storage service not available")
             return jsonify({'error': 'File upload service not available'}), 503
         
         if 'files' not in request.files:
+            logger.error("No files provided in request")
             return jsonify({'error': 'No files provided'}), 400
         
         files = request.files.getlist('files')
         if not files or all(f.filename == '' for f in files):
+            logger.error("No files selected")
             return jsonify({'error': 'No files selected'}), 400
         
-        if len(files) > 8:
-            return jsonify({'error': 'Maximum 8 files allowed'}), 400
+        if len(files) > 10:  # Increased from 8 to 10
+            logger.error(f"Too many files: {len(files)}")
+            return jsonify({'error': 'Maximum 10 files allowed'}), 400
         
         uploaded_files = []
         errors = []
         total_size = 0
         
-        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'mp4', 'mov', 'avi', 'mkv', 'webm'}
-        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'webm'}
+        # Updated file type restrictions and size limits
+        allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', '3gp'}
+        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', '3gp'}
         
-        for file in files:
+        logger.info(f"Processing {len(files)} files for user {current_user.email}")
+        
+        for i, file in enumerate(files):
             if file.filename == '':
                 continue
             
@@ -731,32 +751,48 @@ def upload_issue_media(current_user):
                 file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
                 
                 if file_extension not in allowed_extensions:
-                    errors.append(f"{file.filename}: Invalid file type")
+                    error_msg = f"{file.filename}: Invalid file type (.{file_extension})"
+                    logger.warning(error_msg)
+                    errors.append(error_msg)
                     continue
                 
-                file.seek(0, 2)
+                # Get file size
+                file.seek(0, 2)  # Seek to end
                 file_size = file.tell()
-                file.seek(0)
+                file.seek(0)  # Reset to beginning
                 
-                max_size = 100 * 1024 * 1024 if file_extension in video_extensions else 15 * 1024 * 1024
+                # Increased size limits significantly
+                max_size = 500 * 1024 * 1024 if file_extension in video_extensions else 50 * 1024 * 1024  # 500MB for videos, 50MB for images
                 
                 if file_size > max_size:
-                    errors.append(f"{file.filename}: File too large")
+                    max_size_mb = max_size // (1024 * 1024)
+                    error_msg = f"{file.filename}: File too large ({file_size // (1024 * 1024)}MB > {max_size_mb}MB limit)"
+                    logger.warning(error_msg)
+                    errors.append(error_msg)
                     continue
                 
                 total_size += file_size
                 
-                if total_size > 200 * 1024 * 1024:
-                    errors.append(f"{file.filename}: Total size exceeds 200MB")
+                # Increased total size limit
+                if total_size > 1024 * 1024 * 1024:  # 1GB total limit
+                    error_msg = f"{file.filename}: Total size exceeds 1GB limit"
+                    logger.warning(error_msg)
+                    errors.append(error_msg)
                     continue
                 
+                # Read file data
                 file_data = file.read()
                 content_type = f'video/{file_extension}' if file_extension in video_extensions else file.content_type or f'image/{file_extension}'
                 
+                logger.info(f"Uploading file {i+1}/{len(files)}: {file.filename} ({file_size} bytes, {content_type})")
+                
+                # Upload to Supabase Storage
                 file_url, error = storage_service.upload_file(file_data, f"issue_media_{file.filename}", content_type)
                 
                 if error:
-                    errors.append(f"{file.filename}: Upload failed - {error}")
+                    error_msg = f"{file.filename}: Upload failed - {error}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
                 else:
                     uploaded_files.append({
                         'file_url': file_url,
@@ -764,14 +800,21 @@ def upload_issue_media(current_user):
                         'file_size': file_size,
                         'file_type': 'video' if file_extension in video_extensions else 'image'
                     })
+                    logger.info(f"✅ Successfully uploaded: {file.filename}")
+                    
             except Exception as e:
-                errors.append(f"{file.filename}: {str(e)}")
+                error_msg = f"{file.filename}: {str(e)}"
+                logger.error(f"Error processing file {file.filename}: {e}")
+                errors.append(error_msg)
         
         media_urls = [f['file_url'] for f in uploaded_files]
         
-        logger.info(f"Issue media uploaded by {current_user.email}: {len(uploaded_files)} files")
+        # Log final results
+        logger.info(f"Upload completed for user {current_user.email}: {len(uploaded_files)} files uploaded, {len(errors)} errors")
+        if errors:
+            logger.warning(f"Upload errors: {errors}")
         
-        return jsonify({
+        response_data = {
             'message': f'{len(uploaded_files)} files uploaded successfully',
             'media_urls': media_urls,
             'uploaded_files': uploaded_files,
@@ -780,12 +823,18 @@ def upload_issue_media(current_user):
             'summary': {
                 'images': len([f for f in uploaded_files if f['file_type'] == 'image']),
                 'videos': len([f for f in uploaded_files if f['file_type'] == 'video']),
-                'total_files': len(uploaded_files)
+                'total_files': len(uploaded_files),
+                'total_size_mb': round(total_size / (1024 * 1024), 2)
             }
-        }), 201 if uploaded_files else 400
+        }
+        
+        status_code = 201 if uploaded_files else 400
+        return jsonify(response_data), status_code
+        
     except Exception as e:
-        logger.error(f"Upload error: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+        logger.error(f"Upload endpoint error: {e}")
+        logger.error(f"Error details: {type(e).__name__}: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 # ================================
 # Issue Routes
