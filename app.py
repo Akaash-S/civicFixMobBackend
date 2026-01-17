@@ -1174,6 +1174,7 @@ def set_onboarding_password(current_user):
         
         # Hash and store password (for local auth if needed)
         current_user.password_hash = hash_password(password)
+        current_user.onboarding_completed = True  # Mark onboarding as completed when password is set
         current_user.updated_at = datetime.utcnow()
         db.session.commit()
         
