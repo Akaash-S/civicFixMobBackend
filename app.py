@@ -5,7 +5,7 @@ Production-ready Flask application with modern cloud services
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
@@ -1212,6 +1212,56 @@ def verify_user_password(current_user):
         })
     except Exception as e:
         logger.error(f"Error verifying password: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/auth/login-with-password', methods=['POST'])
+def login_with_password():
+    """Login user by verifying password against Neon database"""
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+        
+        if not email:
+            return jsonify({'error': 'Email is required'}), 400
+            
+        if not password:
+            return jsonify({'error': 'Password is required'}), 400
+        
+        # Find user by email in Neon database
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Check if user has password set
+        if not user.password_hash:
+            return jsonify({'error': 'Password not set for this account'}), 400
+        
+        # Verify password against Neon database
+        if not verify_password(password, user.password_hash):
+            return jsonify({'error': 'Invalid password'}), 401
+        
+        # Generate JWT token for the user
+        token_payload = {
+            'user_id': user.id,
+            'email': user.email,
+            'firebase_uid': user.firebase_uid,
+            'exp': datetime.utcnow() + timedelta(days=30)
+        }
+        
+        token = jwt.encode(token_payload, app.config['SECRET_KEY'], algorithm='HS256')
+        
+        logger.info(f"User {user.email} logged in successfully with password")
+        
+        return jsonify({
+            'message': 'Login successful',
+            'verified': True,
+            'user': user.to_dict(),
+            'token': token
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in password login: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/v1/onboarding/language', methods=['POST'])
