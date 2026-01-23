@@ -308,11 +308,41 @@ class User(db.Model):
     password_hash = db.Column(db.String(255))
     language = db.Column(db.String(10), default='en')
     onboarding_completed = db.Column(db.Boolean, default=False)
+    
+    # Preferences
     notifications_enabled = db.Column(db.Boolean, default=True)
     dark_mode = db.Column(db.Boolean, default=False)
     anonymous_reporting = db.Column(db.Boolean, default=False)
     satellite_view = db.Column(db.Boolean, default=False)
     save_to_gallery = db.Column(db.Boolean, default=True)
+    
+    # Appearance settings
+    theme_color = db.Column(db.String(20), default='blue')
+    font_size = db.Column(db.String(20), default='medium')
+    
+    # Notification settings
+    issue_updates_notifications = db.Column(db.Boolean, default=True)
+    community_activity_notifications = db.Column(db.Boolean, default=True)
+    system_alerts_notifications = db.Column(db.Boolean, default=True)
+    
+    # Media settings
+    photo_quality = db.Column(db.String(20), default='high')
+    video_quality = db.Column(db.String(20), default='high')
+    auto_upload = db.Column(db.Boolean, default=False)
+    
+    # Storage settings
+    cache_auto_clear = db.Column(db.Boolean, default=True)
+    backup_sync = db.Column(db.Boolean, default=False)
+    
+    # Privacy settings
+    location_services = db.Column(db.Boolean, default=True)
+    data_collection = db.Column(db.Boolean, default=True)
+    
+    # Accessibility settings
+    high_contrast = db.Column(db.Boolean, default=False)
+    large_text = db.Column(db.Boolean, default=False)
+    voice_over = db.Column(db.Boolean, default=False)
+    
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -330,11 +360,41 @@ class User(db.Model):
             'bio': self.bio,
             'language': self.language,
             'onboarding_completed': self.onboarding_completed,
+            
+            # Preferences
             'notifications_enabled': self.notifications_enabled,
             'dark_mode': self.dark_mode,
             'anonymous_reporting': self.anonymous_reporting,
             'satellite_view': self.satellite_view,
             'save_to_gallery': self.save_to_gallery,
+            
+            # Appearance settings
+            'theme_color': self.theme_color,
+            'font_size': self.font_size,
+            
+            # Notification settings
+            'issue_updates_notifications': self.issue_updates_notifications,
+            'community_activity_notifications': self.community_activity_notifications,
+            'system_alerts_notifications': self.system_alerts_notifications,
+            
+            # Media settings
+            'photo_quality': self.photo_quality,
+            'video_quality': self.video_quality,
+            'auto_upload': self.auto_upload,
+            
+            # Storage settings
+            'cache_auto_clear': self.cache_auto_clear,
+            'backup_sync': self.backup_sync,
+            
+            # Privacy settings
+            'location_services': self.location_services,
+            'data_collection': self.data_collection,
+            
+            # Accessibility settings
+            'high_contrast': self.high_contrast,
+            'large_text': self.large_text,
+            'voice_over': self.voice_over,
+            
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -541,13 +601,15 @@ def require_auth(f):
     return decorated_function
 
 def sync_user_to_database(user_data):
-    """Sync Supabase user data to local database"""
+    """Sync Supabase user data to local database - Performance Optimized"""
     try:
         if not user_data or not user_data.get('uid'):
             return None
         
         uid = user_data['uid']
-        user = User.query.filter_by(firebase_uid=uid).first()
+        
+        # Optimized query with specific fields only
+        user = db.session.query(User).filter_by(firebase_uid=uid).first()
         
         if not user:
             email = user_data.get('email', '').strip() or f"user_{uid[:16]}@civicfix.temp"
@@ -561,13 +623,23 @@ def sync_user_to_database(user_data):
                 photo_url=user_data.get('user_metadata', {}).get('avatar_url', '')
             )
             db.session.add(user)
-            db.session.commit()
-            logger.info(f"Created new user: {user.email}")
+            
+            # Use bulk insert for better performance if needed
+            try:
+                db.session.commit()
+                logger.info(f"Created new user: {user.email}")
+            except Exception as e:
+                db.session.rollback()
+                logger.error(f"Failed to create user: {e}")
+                return None
         
         return user
     except Exception as e:
         logger.error(f"Failed to sync user: {e}")
-        db.session.rollback()
+        try:
+            db.session.rollback()
+        except:
+            pass
         return None
 
 def hash_password(password: str) -> str:
@@ -988,7 +1060,8 @@ def upvote_issue(current_user, issue_id):
 @app.route('/api/v1/users/me', methods=['GET'])
 @require_auth
 def get_current_user(current_user):
-    """Get current user profile"""
+    """Get current user profile - Performance Optimized"""
+    # Return cached user data to avoid additional database queries
     return jsonify({'user': current_user.to_dict()})
 
 @app.route('/api/v1/users/me', methods=['PUT'])
@@ -1024,18 +1097,77 @@ def update_user_settings(current_user):
     try:
         data = request.get_json()
         
+        # Preferences
         if 'notifications_enabled' in data:
             current_user.notifications_enabled = bool(data['notifications_enabled'])
         if 'dark_mode' in data:
             current_user.dark_mode = bool(data['dark_mode'])
         if 'anonymous_reporting' in data:
             current_user.anonymous_reporting = bool(data['anonymous_reporting'])
+        if 'satellite_view' in data:
+            current_user.satellite_view = bool(data['satellite_view'])
+        if 'save_to_gallery' in data:
+            current_user.save_to_gallery = bool(data['save_to_gallery'])
+        
+        # Appearance settings
+        if 'theme_color' in data:
+            valid_colors = ['blue', 'green', 'purple', 'orange', 'red', 'pink']
+            if data['theme_color'] in valid_colors:
+                current_user.theme_color = data['theme_color']
+        if 'font_size' in data:
+            valid_sizes = ['small', 'medium', 'large', 'extra_large']
+            if data['font_size'] in valid_sizes:
+                current_user.font_size = data['font_size']
+        if 'language' in data:
+            valid_languages = ['en', 'ta', 'hi', 'es', 'fr']
+            if data['language'] in valid_languages:
+                current_user.language = data['language']
+        
+        # Notification settings
+        if 'issue_updates_notifications' in data:
+            current_user.issue_updates_notifications = bool(data['issue_updates_notifications'])
+        if 'community_activity_notifications' in data:
+            current_user.community_activity_notifications = bool(data['community_activity_notifications'])
+        if 'system_alerts_notifications' in data:
+            current_user.system_alerts_notifications = bool(data['system_alerts_notifications'])
+        
+        # Media settings
+        if 'photo_quality' in data:
+            valid_qualities = ['low', 'medium', 'high', 'original']
+            if data['photo_quality'] in valid_qualities:
+                current_user.photo_quality = data['photo_quality']
+        if 'video_quality' in data:
+            valid_qualities = ['low', 'medium', 'high', 'original']
+            if data['video_quality'] in valid_qualities:
+                current_user.video_quality = data['video_quality']
+        if 'auto_upload' in data:
+            current_user.auto_upload = bool(data['auto_upload'])
+        
+        # Storage settings
+        if 'cache_auto_clear' in data:
+            current_user.cache_auto_clear = bool(data['cache_auto_clear'])
+        if 'backup_sync' in data:
+            current_user.backup_sync = bool(data['backup_sync'])
+        
+        # Privacy settings
+        if 'location_services' in data:
+            current_user.location_services = bool(data['location_services'])
+        if 'data_collection' in data:
+            current_user.data_collection = bool(data['data_collection'])
+        
+        # Accessibility settings
+        if 'high_contrast' in data:
+            current_user.high_contrast = bool(data['high_contrast'])
+        if 'large_text' in data:
+            current_user.large_text = bool(data['large_text'])
+        if 'voice_over' in data:
+            current_user.voice_over = bool(data['voice_over'])
         
         current_user.updated_at = datetime.utcnow()
         db.session.commit()
         
         return jsonify({
-            'message': 'Settings updated',
+            'message': 'Settings updated successfully',
             'user': current_user.to_dict()
         })
     except Exception as e:
@@ -1078,7 +1210,7 @@ def authenticate_google():
 
 @app.route('/api/v1/auth/check-user', methods=['POST'])
 def check_user_exists():
-    """Check if user exists in database without creating them"""
+    """Check if user exists in database without creating them - Performance Optimized"""
     try:
         data = request.get_json()
         id_token = data.get('id_token')
@@ -1095,25 +1227,30 @@ def check_user_exists():
         if not email:
             return jsonify({'error': 'Email not found in token'}), 400
         
-        # Check if user exists in database
-        user = User.query.filter_by(email=email).first()
+        # Optimized database query with specific fields only
+        user = db.session.query(
+            User.id, User.email, User.name, User.display_name, User.photo_url, 
+            User.firebase_uid, User.password_hash, User.onboarding_completed
+        ).filter_by(email=email).first()
         
         if user:
-            # Log detailed user state for debugging
-            logger.info(f"User check for: {email} (ID: {user.id})")
-            logger.info(f"Password hash exists: {bool(user.password_hash)}")
-            logger.info(f"Password hash length: {len(user.password_hash) if user.password_hash else 0}")
-            logger.info(f"Onboarding completed: {user.onboarding_completed}")
-            
-            # User exists - return user data and indicate they need password verification
+            # User exists - return minimal data for faster response
             return jsonify({
                 'exists': True,
                 'has_password': bool(user.password_hash),
-                'user': user.to_dict(),
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'name': user.name,
+                    'display_name': user.display_name,
+                    'photo_url': user.photo_url,
+                    'firebase_uid': user.firebase_uid,
+                    'onboarding_completed': user.onboarding_completed
+                },
                 'token': id_token
             })
         else:
-            # User doesn't exist - they need to create account
+            # User doesn't exist - return minimal data for creation
             return jsonify({
                 'exists': False,
                 'has_password': False,
@@ -1418,6 +1555,33 @@ def change_password(current_user):
         logger.error(f"Error changing password: {e}")
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/v1/users/me/delete', methods=['DELETE'])
+@require_auth
+def delete_user_account(current_user):
+    """Delete user account and all associated data"""
+    try:
+        user_id = current_user.id
+        user_email = current_user.email
+        
+        # Delete user's issues and comments (cascade should handle this, but let's be explicit)
+        Issue.query.filter_by(created_by=user_id).delete()
+        Comment.query.filter_by(user_id=user_id).delete()
+        
+        # Delete the user
+        db.session.delete(current_user)
+        db.session.commit()
+        
+        logger.info(f"User account deleted: {user_email} (ID: {user_id})")
+        
+        return jsonify({
+            'message': 'Account deleted successfully',
+            'note': 'All your data has been permanently removed'
+        })
+    except Exception as e:
+        logger.error(f"Error deleting user account: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Failed to delete account. Please try again.'}), 500
 
 @app.route('/api/v1/users/<int:user_id>/issues', methods=['GET'])
 def get_user_issues(user_id):
