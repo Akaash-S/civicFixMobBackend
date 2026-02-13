@@ -18,6 +18,7 @@ from functools import lru_cache, wraps
 import time
 import hashlib
 import secrets
+import asyncio
 
 # Supabase Storage imports
 from supabase import create_client, Client
@@ -201,6 +202,18 @@ except Exception as e:
         storage_service = None
     else:
         raise
+
+# ================================
+# AI Service and Timeline Service
+# ================================
+
+# Import AI service client and timeline service
+from ai_service_client import ai_client
+from timeline_service import TimelineService, EventType, ActorType
+
+# Initialize timeline service
+timeline_service = TimelineService(db)
+logger.info("Timeline service initialized successfully")
 
 # ================================
 # Database Initialization
@@ -418,6 +431,16 @@ class Issue(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    # AI Verification fields
+    ai_verification_status = db.Column(db.String(20), default='PENDING')
+    ai_confidence_score = db.Column(db.Float, default=0.0)
+    government_images = db.Column(db.Text)  # JSON array
+    government_notes = db.Column(db.Text)
+    citizen_verification_status = db.Column(db.String(20))
+    escalation_status = db.Column(db.String(20), default='NONE')
+    escalation_date = db.Column(db.DateTime)
+    resolution_date = db.Column(db.DateTime)
+    
     comments = db.relationship('Comment', backref='issue', lazy=True, cascade='all, delete-orphan')
     
     def get_image_urls(self):
@@ -438,6 +461,20 @@ class Issue(db.Model):
             self.image_urls = None
             self.image_url = None
     
+    def get_government_images(self):
+        if self.government_images:
+            try:
+                return json.loads(self.government_images)
+            except:
+                return []
+        return []
+    
+    def set_government_images(self, urls):
+        if urls:
+            self.government_images = json.dumps(urls)
+        else:
+            self.government_images = None
+    
     def to_dict(self):
         return {
             'id': self.id,
@@ -454,7 +491,16 @@ class Issue(db.Model):
             'created_by': self.created_by,
             'creator_name': self.creator.name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            # AI Verification fields
+            'ai_verification_status': self.ai_verification_status,
+            'ai_confidence_score': self.ai_confidence_score,
+            'government_images': self.get_government_images(),
+            'government_notes': self.government_notes,
+            'citizen_verification_status': self.citizen_verification_status,
+            'escalation_status': self.escalation_status,
+            'escalation_date': self.escalation_date.isoformat() if self.escalation_date else None,
+            'resolution_date': self.resolution_date.isoformat() if self.resolution_date else None
         }
 
 class Comment(db.Model):
@@ -959,7 +1005,7 @@ def get_issues():
 @app.route('/api/v1/issues', methods=['POST'])
 @require_auth
 def create_issue(current_user):
-    """Create a new issue"""
+    """Create a new issue with AI verification"""
     try:
         data = request.get_json()
         
@@ -990,7 +1036,9 @@ def create_issue(current_user):
             longitude=longitude,
             address=data.get('address', '').strip(),
             priority=priority.upper(),
-            created_by=current_user.id
+            created_by=current_user.id,
+            status='SUBMITTED',
+            ai_verification_status='PENDING'
         )
         
         image_urls = data.get('image_urls', [])
@@ -1010,6 +1058,101 @@ def create_issue(current_user):
         db.session.commit()
         
         logger.info(f"Issue created: ID {issue.id} by {current_user.email}")
+        
+        # Create timeline event for issue creation
+        timeline_service.create_event(
+            issue_id=issue.id,
+            event_type=EventType.ISSUE_CREATED,
+            actor_type=ActorType.CITIZEN,
+            actor_id=current_user.id,
+            description=f"Issue reported: {issue.title}",
+            metadata={
+                'category': issue.category,
+                'priority': issue.priority,
+                'location': {
+                    'latitude': issue.latitude,
+                    'longitude': issue.longitude,
+                    'address': issue.address
+                }
+            },
+            image_urls=image_urls
+        )
+        
+        # Trigger AI verification asynchronously if images provided
+        if image_urls:
+            try:
+                # Create timeline event for AI verification start
+                timeline_service.create_event(
+                    issue_id=issue.id,
+                    event_type=EventType.AI_VERIFICATION_STARTED,
+                    actor_type=ActorType.AI,
+                    actor_id=None,
+                    description="AI verification started",
+                    metadata={'image_count': len(image_urls)}
+                )
+                
+                # Call AI service
+                ai_result = asyncio.run(ai_client.verify_issue_initial(
+                    issue_id=issue.id,
+                    image_urls=image_urls,
+                    category=issue.category,
+                    location={
+                        'latitude': issue.latitude,
+                        'longitude': issue.longitude
+                    },
+                    description=issue.description
+                ))
+                
+                if ai_result:
+                    # Update issue with AI verification result
+                    issue.ai_verification_status = ai_result.get('status', 'PENDING')
+                    issue.ai_confidence_score = ai_result.get('confidence_score', 0.0)
+                    
+                    # Update issue status based on AI result
+                    if ai_result.get('status') == 'REJECTED':
+                        issue.status = 'REJECTED'
+                    elif ai_result.get('status') == 'APPROVED':
+                        issue.status = 'OPEN'
+                        # Create timeline event for issue published
+                        timeline_service.create_event(
+                            issue_id=issue.id,
+                            event_type=EventType.ISSUE_PUBLISHED,
+                            actor_type=ActorType.SYSTEM,
+                            actor_id=None,
+                            description="Issue published after AI approval",
+                            metadata={'confidence_score': issue.ai_confidence_score}
+                        )
+                    
+                    db.session.commit()
+                    
+                    # Create timeline event for AI verification completion
+                    timeline_service.create_event(
+                        issue_id=issue.id,
+                        event_type=EventType.AI_VERIFICATION_COMPLETED,
+                        actor_type=ActorType.AI,
+                        actor_id=None,
+                        description=f"AI verification completed: {ai_result.get('status')}",
+                        metadata={
+                            'status': ai_result.get('status'),
+                            'confidence_score': ai_result.get('confidence_score'),
+                            'checks_performed': ai_result.get('checks_performed', {}),
+                            'rejection_reasons': ai_result.get('rejection_reasons', [])
+                        }
+                    )
+                    
+                    logger.info(f"AI verification completed for issue #{issue.id}: {ai_result.get('status')}")
+                else:
+                    logger.warning(f"AI verification returned no result for issue #{issue.id}")
+                    
+            except Exception as e:
+                logger.error(f"AI verification failed for issue #{issue.id}: {e}")
+                # Continue without AI verification - issue remains in PENDING state
+        else:
+            # No images, auto-approve
+            issue.status = 'OPEN'
+            issue.ai_verification_status = 'SKIPPED'
+            db.session.commit()
+            logger.info(f"Issue #{issue.id} published without images (AI verification skipped)")
         
         return jsonify({
             'message': 'Issue created successfully',
@@ -1052,6 +1195,331 @@ def upvote_issue(current_user, issue_id):
         logger.error(f"Error upvoting issue: {e}")
         db.session.rollback()
         return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# AI Verification Routes
+# ================================
+
+@app.route('/api/v1/issues/<int:issue_id>/ai-verification', methods=['GET'])
+@require_auth
+def get_ai_verification(current_user, issue_id):
+    """Get AI verification details for an issue"""
+    try:
+        # Check if issue exists
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Get verification status from AI service
+        verification = asyncio.run(ai_client.get_verification_status(issue_id))
+        
+        if not verification:
+            # Return basic info from database if AI service unavailable
+            return jsonify({
+                'issue_id': issue_id,
+                'status': issue.ai_verification_status,
+                'confidence_score': issue.ai_confidence_score,
+                'message': 'Detailed verification data unavailable'
+            })
+        
+        return jsonify(verification)
+    except Exception as e:
+        logger.error(f"Failed to get AI verification: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/api/v1/issues/<int:issue_id>/timeline', methods=['GET'])
+@require_auth
+def get_issue_timeline(current_user, issue_id):
+    """Get timeline events for an issue"""
+    try:
+        # Check if issue exists
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Get timeline events
+        events = timeline_service.get_events(issue_id)
+        
+        return jsonify({
+            'issue_id': issue_id,
+            'events': events,
+            'total_events': len(events)
+        })
+    except Exception as e:
+        logger.error(f"Failed to get timeline: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/api/v1/issues/<int:issue_id>/citizen-verify', methods=['POST'])
+@require_auth
+def submit_citizen_verification(current_user, issue_id):
+    """Submit citizen verification for an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Only issue creator can verify
+        if issue.created_by != current_user.id:
+            return jsonify({'error': 'Only issue creator can verify resolution'}), 403
+        
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        # Validate required fields
+        if 'verified' not in data:
+            return jsonify({'error': 'Missing required field: verified'}), 400
+        
+        if 'location' not in data or 'latitude' not in data['location'] or 'longitude' not in data['location']:
+            return jsonify({'error': 'Missing required field: location'}), 400
+        
+        # Create citizen verification record
+        import json as json_lib
+        
+        db.session.execute(
+            db.text("""
+                INSERT INTO citizen_verifications 
+                (issue_id, user_id, verification_type, status, image_urls, notes, 
+                 location_verified, latitude, longitude, created_at)
+                VALUES 
+                (:issue_id, :user_id, 'FINAL_VERIFICATION', :status, :image_urls, 
+                 :notes, true, :latitude, :longitude, :created_at)
+            """),
+            {
+                'issue_id': issue_id,
+                'user_id': current_user.id,
+                'status': 'VERIFIED' if data['verified'] else 'NOT_VERIFIED',
+                'image_urls': json_lib.dumps(data.get('image_urls', [])),
+                'notes': data.get('notes', ''),
+                'latitude': data['location']['latitude'],
+                'longitude': data['location']['longitude'],
+                'created_at': datetime.utcnow()
+            }
+        )
+        
+        # Update issue status
+        if data['verified']:
+            issue.status = 'CLOSED'
+            issue.citizen_verification_status = 'VERIFIED'
+            issue.resolution_date = datetime.utcnow()
+            
+            # Create timeline event
+            timeline_service.create_event(
+                issue_id=issue_id,
+                event_type=EventType.CITIZEN_VERIFICATION_COMPLETED,
+                actor_type=ActorType.CITIZEN,
+                actor_id=current_user.id,
+                description="Citizen verified issue resolution",
+                metadata={'verified': True},
+                image_urls=data.get('image_urls', [])
+            )
+            
+            # Create issue closed event
+            timeline_service.create_event(
+                issue_id=issue_id,
+                event_type=EventType.ISSUE_CLOSED,
+                actor_type=ActorType.SYSTEM,
+                actor_id=None,
+                description="Issue closed after citizen verification",
+                metadata={'resolution_date': issue.resolution_date.isoformat()}
+            )
+        else:
+            issue.status = 'DISPUTED'
+            issue.citizen_verification_status = 'DISPUTED'
+            
+            # Create timeline event
+            timeline_service.create_event(
+                issue_id=issue_id,
+                event_type=EventType.ISSUE_DISPUTED,
+                actor_type=ActorType.CITIZEN,
+                actor_id=current_user.id,
+                description="Citizen disputed resolution",
+                metadata={'verified': False, 'notes': data.get('notes', '')},
+                image_urls=data.get('image_urls', [])
+            )
+        
+        db.session.commit()
+        
+        logger.info(f"Citizen verification submitted for issue #{issue_id}: {data['verified']}")
+        
+        return jsonify({
+            'message': 'Verification submitted successfully',
+            'issue': issue.to_dict()
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to submit citizen verification: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/api/v1/issues/<int:issue_id>/cross-verification', methods=['GET'])
+@require_auth
+def get_cross_verification(current_user, issue_id):
+    """Get cross-verification results for an issue"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # Check if cross-verification exists in database
+        result = db.session.execute(
+            db.text("""
+                SELECT id, status, confidence_score, checks_performed, created_at
+                FROM ai_verifications 
+                WHERE issue_id = :issue_id 
+                AND verification_type = 'CROSS_VERIFICATION'
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """),
+            {'issue_id': issue_id}
+        )
+        
+        verification = result.fetchone()
+        
+        if not verification:
+            return jsonify({'error': 'Cross-verification not found'}), 404
+        
+        return jsonify({
+            'issue_id': issue_id,
+            'verification_id': verification[0],
+            'status': verification[1],
+            'confidence_score': verification[2],
+            'checks_performed': json.loads(verification[3]) if verification[3] else {},
+            'created_at': verification[4].isoformat() if verification[4] else None,
+            'citizen_images': issue.get_image_urls(),
+            'government_images': issue.get_government_images()
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to get cross-verification: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/api/v1/issues/<int:issue_id>/government-action', methods=['POST'])
+@require_auth
+def submit_government_action(current_user, issue_id):
+    """Submit government action/resolution for an issue (Admin only)"""
+    try:
+        issue = Issue.query.get(issue_id)
+        if not issue:
+            return jsonify({'error': 'Issue not found'}), 404
+        
+        # TODO: Add admin role check here
+        # For now, any authenticated user can submit (for testing)
+        
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        action_type = data.get('action_type', 'WORK_COMPLETED')
+        government_images = data.get('image_urls', [])
+        notes = data.get('notes', '')
+        
+        # Update issue with government data
+        issue.set_government_images(government_images)
+        issue.government_notes = notes
+        issue.status = 'RESOLVED'
+        
+        # Create timeline event
+        timeline_service.create_event(
+            issue_id=issue_id,
+            event_type=EventType.WORK_COMPLETED,
+            actor_type=ActorType.GOVERNMENT,
+            actor_id=current_user.id,
+            description=f"Government marked issue as resolved: {notes}",
+            metadata={'action_type': action_type},
+            image_urls=government_images
+        )
+        
+        db.session.commit()
+        
+        # Trigger cross-verification if both citizen and government images exist
+        if issue.get_image_urls() and government_images:
+            try:
+                # Create timeline event for cross-verification start
+                timeline_service.create_event(
+                    issue_id=issue_id,
+                    event_type=EventType.CROSS_VERIFICATION_STARTED,
+                    actor_type=ActorType.AI,
+                    actor_id=None,
+                    description="AI cross-verification started"
+                )
+                
+                # Call AI service for cross-verification
+                cross_result = asyncio.run(ai_client.verify_cross_check(
+                    issue_id=issue_id,
+                    citizen_images=issue.get_image_urls(),
+                    government_images=government_images,
+                    location={
+                        'latitude': issue.latitude,
+                        'longitude': issue.longitude
+                    },
+                    issue_category=issue.category
+                ))
+                
+                if cross_result:
+                    # Create timeline event for cross-verification completion
+                    timeline_service.create_event(
+                        issue_id=issue_id,
+                        event_type=EventType.CROSS_VERIFICATION_COMPLETED,
+                        actor_type=ActorType.AI,
+                        actor_id=None,
+                        description=f"Cross-verification completed: {cross_result.get('status')}",
+                        metadata={
+                            'status': cross_result.get('status'),
+                            'confidence_score': cross_result.get('confidence_score'),
+                            'checks_performed': cross_result.get('checks_performed', {})
+                        }
+                    )
+                    
+                    # Request citizen verification
+                    timeline_service.create_event(
+                        issue_id=issue_id,
+                        event_type=EventType.CITIZEN_VERIFICATION_REQUESTED,
+                        actor_type=ActorType.SYSTEM,
+                        actor_id=None,
+                        description="Citizen verification requested"
+                    )
+                    
+                    logger.info(f"Cross-verification completed for issue #{issue_id}")
+                    
+            except Exception as e:
+                logger.error(f"Cross-verification failed for issue #{issue_id}: {e}")
+        
+        return jsonify({
+            'message': 'Government action submitted successfully',
+            'issue': issue.to_dict()
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to submit government action: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/api/v1/ai-service/health', methods=['GET'])
+def check_ai_service_health():
+    """Check AI service health"""
+    try:
+        is_healthy = asyncio.run(ai_client.health_check())
+        
+        return jsonify({
+            'ai_service_enabled': ai_client.enabled,
+            'ai_service_healthy': is_healthy,
+            'ai_service_url': ai_client.base_url
+        })
+    except Exception as e:
+        logger.error(f"Failed to check AI service health: {e}")
+        return jsonify({
+            'ai_service_enabled': ai_client.enabled,
+            'ai_service_healthy': False,
+            'error': str(e)
+        }), 500
 
 # ================================
 # User Routes

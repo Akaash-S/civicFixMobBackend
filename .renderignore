@@ -1,0 +1,52 @@
+# Render Ignore File
+# Files and directories to exclude from deployment
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Local database
+instance/
+*.db
+*.sqlite
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation (optional - remove if you want docs deployed)
+*.md
+!README.md
+
+# Tests
+test_*.py
+*_test.py
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deployment scripts
+deploy-*.sh
+docker-compose.yml
+Dockerfile
+nginx.conf

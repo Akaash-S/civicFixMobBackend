@@ -1,0 +1,46 @@
+services:
+  # CivicFix Backend API
+  - type: web
+    name: civicfix-backend
+    env: python
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: civicfix-db
+          property: connectionString
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: civicfix-media
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: AI_SERVICE_URL
+        sync: false
+      - key: AI_SERVICE_API_KEY
+        sync: false
+      - key: AI_SERVICE_ENABLED
+        value: true
+      - key: SKIP_VALIDATION
+        value: false
+    healthCheckPath: /health
+
+databases:
+  - name: civicfix-db
+    databaseName: civicfix
+    user: civicfix
+    plan: free
