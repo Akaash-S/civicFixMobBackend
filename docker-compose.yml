@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # Backend API Service
   backend:
     build:
       context: .
@@ -14,9 +15,78 @@ services:
       - FLASK_ENV=production
       - PORT=5000
       - PYTHONUNBUFFERED=1
+      - AI_SERVICE_URL=http://ai-service:8001
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      ai-service:
+        condition: service_healthy
+    networks:
+      - civicfix-network
+
+  # AI Verification Service
+  ai-service:
+    build:
+      context: ../ai-service
+      dockerfile: Dockerfile
+    container_name: civicfix-ai-service
+    ports:
+      - "8001:8001"
+    environment:
+      # Service Config
+      - SERVICE_NAME=civicfix-ai-service
+      - SERVICE_PORT=8001
+      - PORT=8001
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      
+      # Database (from backend .env)
+      - DATABASE_URL=${DATABASE_URL}
+      
+      # Security (from ai-service .env)
+      - API_KEY=8209d737eb28d61c61026a61ee96326a96ebbc67ccc89ac04a8b6495f63d011b0f1053467bd9970399e7ad5e598115f1489265d916868dc55d1d687a06b33562
+      - SECRET_KEY=5f8b19bd04ecdb551bd922ee7094a68b0ed859fa03f8f7fbc13da29a49e4afece25e2bba3af8d6413a5607d869eb29a4637887fe6222ddd612c277a76e28969f
+      - ALLOWED_ORIGINS=*
+      
+      # AI Features
+      - FAKE_DETECTION_ENABLED=true
+      - DUPLICATE_DETECTION_ENABLED=true
+      - LOCATION_VALIDATION_ENABLED=true
+      - CATEGORY_VALIDATION_ENABLED=true
+      
+      # Feature Flags
+      - ENABLE_MOCK_AI=true
+      - ENABLE_INTERNET_SEARCH=false
+      - ENABLE_ADVANCED_ANALYSIS=false
+      
+      # Thresholds
+      - MIN_CONFIDENCE_SCORE=0.7
+      - AUTO_APPROVE_THRESHOLD=0.9
+      - AUTO_REJECT_THRESHOLD=0.3
+      - DUPLICATE_THRESHOLD=0.85
+      - LOCATION_RADIUS_METERS=100
+      
+      # Performance
+      - MAX_IMAGE_SIZE_MB=10
+      - MAX_IMAGES_PER_REQUEST=10
+      - REQUEST_TIMEOUT_SECONDS=30
+      - MAX_CONCURRENT_REQUESTS=10
+      
+      # Caching
+      - CACHE_ENABLED=false
+      - CACHE_TTL_SECONDS=3600
+      
+      # Monitoring
+      - PROMETHEUS_ENABLED=true
+      - SENTRY_ENABLED=false
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
