@@ -753,6 +753,87 @@ def health():
         }
     })
 
+@app.route('/init-db', methods=['POST'])
+def manual_init_database():
+    """Manually initialize database tables - Use this if tables don't exist"""
+    try:
+        logger.info("Manual database initialization requested")
+        
+        # Check if tables already exist
+        inspector = db.inspect(db.engine)
+        existing_tables = inspector.get_table_names()
+        
+        logger.info(f"Existing tables before init: {existing_tables}")
+        
+        # Create all tables
+        db.create_all()
+        
+        # Add missing columns to users table if needed
+        logger.info("Checking for missing columns in users table...")
+        if 'users' in existing_tables:
+            existing_columns = [col['name'] for col in inspector.get_columns('users')]
+            logger.info(f"Existing columns: {len(existing_columns)}")
+            
+            required_columns = {
+                'theme_color': "VARCHAR(20) DEFAULT 'blue'",
+                'font_size': "VARCHAR(20) DEFAULT 'medium'",
+                'issue_updates_notifications': "BOOLEAN DEFAULT TRUE",
+                'community_activity_notifications': "BOOLEAN DEFAULT TRUE",
+                'system_alerts_notifications': "BOOLEAN DEFAULT TRUE",
+                'photo_quality': "VARCHAR(20) DEFAULT 'high'",
+                'video_quality': "VARCHAR(20) DEFAULT 'high'",
+                'auto_upload': "BOOLEAN DEFAULT FALSE",
+                'cache_auto_clear': "BOOLEAN DEFAULT TRUE",
+                'backup_sync': "BOOLEAN DEFAULT FALSE",
+                'location_services': "BOOLEAN DEFAULT TRUE",
+                'data_collection': "BOOLEAN DEFAULT TRUE",
+                'high_contrast': "BOOLEAN DEFAULT FALSE",
+                'large_text': "BOOLEAN DEFAULT FALSE",
+                'voice_over': "BOOLEAN DEFAULT FALSE",
+            }
+            
+            missing_columns = {col: definition for col, definition in required_columns.items() 
+                              if col not in existing_columns}
+            
+            if missing_columns:
+                logger.info(f"Adding {len(missing_columns)} missing columns...")
+                for col_name, col_definition in missing_columns.items():
+                    try:
+                        sql = f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col_name} {col_definition}"
+                        db.session.execute(db.text(sql))
+                        db.session.commit()
+                        logger.info(f"Added column: {col_name}")
+                    except Exception as e:
+                        logger.error(f"Failed to add column {col_name}: {e}")
+                        db.session.rollback()
+            else:
+                logger.info("All columns exist")
+        
+        # Verify tables were created
+        inspector = db.inspect(db.engine)
+        tables_after = inspector.get_table_names()
+        
+        logger.info(f"Tables after init: {tables_after}")
+        
+        # Get column counts
+        table_info = {}
+        for table in tables_after:
+            columns = inspector.get_columns(table)
+            table_info[table] = len(columns)
+        
+        return jsonify({
+            'message': 'Database initialized successfully',
+            'tables_before': existing_tables,
+            'tables_after': tables_after,
+            'new_tables': list(set(tables_after) - set(existing_tables)),
+            'table_info': table_info
+        })
+    except Exception as e:
+        logger.error(f"Manual database initialization failed: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({'error': f'Database initialization failed: {str(e)}'}), 500
+
 @app.route('/api/v1/categories', methods=['GET'])
 def get_categories():
     """Get all issue categories"""
@@ -1741,6 +1822,8 @@ def create_user_with_password():
         password = data.get('password')
         language = data.get('language', 'en')
         
+        logger.info(f"Create user request received")
+        
         if not id_token:
             return jsonify({'error': 'ID token is required'}), 400
         
@@ -1751,45 +1834,90 @@ def create_user_with_password():
             return jsonify({'error': 'Password must be at least 8 characters'}), 400
         
         # Verify the token with Supabase
-        token_data = verify_supabase_token(id_token)
-        if not token_data:
-            return jsonify({'error': 'Invalid token'}), 401
+        logger.info(f"Verifying Supabase token...")
+        try:
+            token_data = verify_supabase_token(id_token)
+            if not token_data:
+                logger.error("Token verification failed")
+                return jsonify({'error': 'Invalid token'}), 401
+            logger.info(f"Token verified successfully for email: {token_data.get('email')}")
+        except Exception as token_error:
+            logger.error(f"Token verification error: {token_error}")
+            return jsonify({'error': 'Token verification failed'}), 401
         
         email = token_data.get('email')
         if not email:
             return jsonify({'error': 'Email not found in token'}), 400
         
         # Check if user already exists
-        existing_user = User.query.filter_by(email=email).first()
-        if existing_user:
-            return jsonify({'error': 'User already exists'}), 400
+        logger.info(f"Checking if user exists: {email}")
+        try:
+            existing_user = User.query.filter_by(email=email).first()
+            if existing_user:
+                logger.info(f"User already exists: {email}")
+                return jsonify({'error': 'User already exists'}), 400
+            logger.info(f"User does not exist, creating new user")
+        except Exception as db_error:
+            logger.error(f"Database query error when checking user: {db_error}")
+            logger.error(f"Error type: {type(db_error).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return jsonify({'error': 'Database error'}), 500
         
         # Create new user
-        new_user = User(
-            firebase_uid=token_data.get('sub', ''),
-            email=email,
-            name=token_data.get('name', email.split('@')[0]),
-            display_name=token_data.get('name', email.split('@')[0]),
-            photo_url=token_data.get('picture', ''),
-            password_hash=hash_password(password),
-            language=language,
-            onboarding_completed=True,  # Mark as completed since they set password and language
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
-        )
-        
-        db.session.add(new_user)
-        db.session.commit()
-        
-        logger.info(f"New user created: {new_user.email}")
-        
-        return jsonify({
-            'message': 'User created successfully',
-            'user': new_user.to_dict(),
-            'token': id_token
-        })
+        try:
+            logger.info(f"Creating new user object...")
+            new_user = User(
+                firebase_uid=token_data.get('sub', ''),
+                email=email,
+                name=token_data.get('name', email.split('@')[0]),
+                display_name=token_data.get('name', email.split('@')[0]),
+                photo_url=token_data.get('picture', ''),
+                password_hash=hash_password(password),
+                language=language,
+                onboarding_completed=True,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            logger.info(f"User object created, adding to session...")
+            
+            db.session.add(new_user)
+            logger.info(f"User added to session, committing...")
+            
+            db.session.commit()
+            logger.info(f"User committed successfully: {new_user.email} (ID: {new_user.id})")
+            
+            # Generate JWT token
+            token_payload = {
+                'user_id': new_user.id,
+                'email': new_user.email,
+                'firebase_uid': new_user.firebase_uid,
+                'exp': datetime.utcnow() + timedelta(days=30)
+            }
+            
+            jwt_token = jwt.encode(token_payload, app.config['SECRET_KEY'], algorithm='HS256')
+            
+            # Handle both string and bytes return from jwt.encode
+            if isinstance(jwt_token, bytes):
+                jwt_token = jwt_token.decode('utf-8')
+            
+            return jsonify({
+                'message': 'User created successfully',
+                'user': new_user.to_dict(),
+                'token': jwt_token
+            })
+        except Exception as create_error:
+            logger.error(f"Error creating user: {create_error}")
+            logger.error(f"Error type: {type(create_error).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            db.session.rollback()
+            return jsonify({'error': f'Failed to create user: {str(create_error)}'}), 500
     except Exception as e:
-        logger.error(f"Error creating user: {e}")
+        logger.error(f"Unexpected error in create_user: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         db.session.rollback()
         return jsonify({'error': 'Failed to create user'}), 500
 
@@ -2591,8 +2719,25 @@ def get_priority_options():
 def get_stats():
     """Get platform statistics"""
     try:
-        total_issues = Issue.query.count()
-        total_users = User.query.count()
+        logger.info("Stats endpoint called")
+        
+        try:
+            total_issues = Issue.query.count()
+            logger.info(f"Total issues: {total_issues}")
+        except Exception as issue_error:
+            logger.error(f"Error counting issues: {issue_error}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return jsonify({'error': 'Database error: Issue table'}), 500
+        
+        try:
+            total_users = User.query.count()
+            logger.info(f"Total users: {total_users}")
+        except Exception as user_error:
+            logger.error(f"Error counting users: {user_error}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return jsonify({'error': 'Database error: User table'}), 500
         
         # Issues by status
         issues_by_status = {}
@@ -2615,6 +2760,9 @@ def get_stats():
         })
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'error': 'Internal server error'}), 500
 
 # ================================
