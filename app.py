@@ -51,6 +51,22 @@ if database_url.startswith('postgres://'):
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Configure connection pooling for Neon PostgreSQL
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_size': 10,
+    'pool_recycle': 300,  # Recycle connections after 5 minutes
+    'pool_pre_ping': True,  # Verify connections before using them
+    'max_overflow': 20,
+    'pool_timeout': 30,
+    'connect_args': {
+        'connect_timeout': 10,
+        'keepalives': 1,
+        'keepalives_idle': 30,
+        'keepalives_interval': 10,
+        'keepalives_count': 5,
+    }
+}
+
 # Initialize extensions
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -1786,55 +1802,92 @@ def check_user_exists():
             return jsonify({'error': 'Email not found in token'}), 400
         
         # Query only essential fields to avoid missing column errors
+        # Retry logic for transient connection errors
         logger.info(f"Checking if user exists: {email}")
-        try:
-            # Use raw SQL to query only existing columns
-            result = db.session.execute(
-                db.text("""
-                    SELECT id, email, name, display_name, photo_url, 
-                           firebase_uid, password_hash, onboarding_completed
-                    FROM users 
-                    WHERE email = :email
-                    LIMIT 1
-                """),
-                {'email': email}
-            ).fetchone()
-            
-            if result:
-                # User exists - return minimal data
-                logger.info(f"User found: {email}")
-                return jsonify({
-                    'exists': True,
-                    'has_password': bool(result[6]),  # password_hash
-                    'user': {
-                        'id': result[0],
-                        'email': result[1],
-                        'name': result[2],
-                        'display_name': result[3],
-                        'photo_url': result[4],
-                        'firebase_uid': result[5],
-                        'onboarding_completed': result[7] if result[7] is not None else False
-                    },
-                    'token': id_token
-                })
-            else:
-                # User doesn't exist
-                logger.info(f"User not found: {email}")
-                return jsonify({
-                    'exists': False,
-                    'has_password': False,
-                    'email': email,
-                    'name': token_data.get('name', ''),
-                    'photo_url': token_data.get('picture', ''),
-                    'firebase_uid': token_data.get('sub', ''),
-                    'token': id_token
-                })
-        except Exception as db_error:
-            logger.error(f"Database query error: {db_error}")
-            logger.error(f"Error type: {type(db_error).__name__}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return jsonify({'error': 'Database error'}), 500
+        max_retries = 3
+        retry_count = 0
+        result = None
+        
+        while retry_count < max_retries:
+            try:
+                # Use raw SQL to query only existing columns
+                result = db.session.execute(
+                    db.text("""
+                        SELECT id, email, name, display_name, photo_url, 
+                               firebase_uid, password_hash, onboarding_completed
+                        FROM users 
+                        WHERE email = :email
+                        LIMIT 1
+                    """),
+                    {'email': email}
+                ).fetchone()
+                
+                # If we got here, query succeeded
+                break
+                
+            except Exception as db_error:
+                retry_count += 1
+                error_msg = str(db_error)
+                
+                # Check if it's a connection error that we should retry
+                if 'SSL connection' in error_msg or 'connection' in error_msg.lower():
+                    logger.warning(f"Database connection error (attempt {retry_count}/{max_retries}): {db_error}")
+                    
+                    if retry_count < max_retries:
+                        # Close the current session and create a new one
+                        try:
+                            db.session.rollback()
+                            db.session.remove()
+                        except:
+                            pass
+                        
+                        # Wait a bit before retrying
+                        import time
+                        time.sleep(0.5 * retry_count)  # Exponential backoff
+                        continue
+                    else:
+                        logger.error(f"Database query failed after {max_retries} attempts")
+                        logger.error(f"Error type: {type(db_error).__name__}")
+                        import traceback
+                        logger.error(f"Traceback: {traceback.format_exc()}")
+                        return jsonify({'error': 'Database connection error. Please try again.'}), 503
+                else:
+                    # Not a connection error, don't retry
+                    logger.error(f"Database query error: {db_error}")
+                    logger.error(f"Error type: {type(db_error).__name__}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    return jsonify({'error': 'Database error'}), 500
+        
+        if result:
+            # User exists - return minimal data
+            logger.info(f"User found: {email}")
+            return jsonify({
+                'exists': True,
+                'has_password': bool(result[6]),  # password_hash
+                'user': {
+                    'id': result[0],
+                    'email': result[1],
+                    'name': result[2],
+                    'display_name': result[3],
+                    'photo_url': result[4],
+                    'firebase_uid': result[5],
+                    'onboarding_completed': result[7] if result[7] is not None else False
+                },
+                'token': id_token
+            })
+        else:
+            # User doesn't exist
+            logger.info(f"User not found: {email}")
+            return jsonify({
+                'exists': False,
+                'has_password': False,
+                'email': email,
+                'name': token_data.get('name', ''),
+                'photo_url': token_data.get('picture', ''),
+                'firebase_uid': token_data.get('sub', ''),
+                'token': id_token
+            })
             
     except Exception as e:
         logger.error(f"Error checking user: {e}")
@@ -2067,13 +2120,40 @@ def login_with_password():
         if not password:
             return jsonify({'error': 'Password is required'}), 400
         
-        # Find user by email in Neon database
-        try:
-            user = User.query.filter_by(email=email).first()
-            logger.info(f"User query result: {user is not None}")
-        except Exception as db_error:
-            logger.error(f"Database query error: {db_error}")
-            return jsonify({'error': 'Database error'}), 500
+        # Find user by email in Neon database with retry logic
+        max_retries = 3
+        retry_count = 0
+        user = None
+        
+        while retry_count < max_retries:
+            try:
+                user = User.query.filter_by(email=email).first()
+                logger.info(f"User query result: {user is not None}")
+                break  # Success, exit retry loop
+                
+            except Exception as db_error:
+                retry_count += 1
+                error_msg = str(db_error)
+                
+                if 'SSL connection' in error_msg or 'connection' in error_msg.lower():
+                    logger.warning(f"Database connection error (attempt {retry_count}/{max_retries}): {db_error}")
+                    
+                    if retry_count < max_retries:
+                        try:
+                            db.session.rollback()
+                            db.session.remove()
+                        except:
+                            pass
+                        
+                        import time
+                        time.sleep(0.5 * retry_count)
+                        continue
+                    else:
+                        logger.error(f"Database query failed after {max_retries} attempts")
+                        return jsonify({'error': 'Database connection error. Please try again.'}), 503
+                else:
+                    logger.error(f"Database query error: {db_error}")
+                    return jsonify({'error': 'Database error'}), 500
         
         if not user:
             logger.info(f"User not found for email: {email}")
