@@ -1764,53 +1764,83 @@ def check_user_exists():
         data = request.get_json()
         id_token = data.get('id_token')
         
+        logger.info("Check user request received")
+        
         if not id_token:
             return jsonify({'error': 'ID token is required'}), 400
         
         # Verify the token with Supabase
-        token_data = verify_supabase_token(id_token)
-        if not token_data:
+        logger.info("Verifying Supabase token...")
+        try:
+            token_data = verify_supabase_token(id_token)
+            if not token_data:
+                logger.error("Token verification failed")
+                return jsonify({'error': 'Invalid token'}), 401
+            logger.info(f"Token verified for email: {token_data.get('email')}")
+        except Exception as token_error:
+            logger.error(f"Token verification error: {token_error}")
             return jsonify({'error': 'Invalid token'}), 401
         
         email = token_data.get('email')
         if not email:
             return jsonify({'error': 'Email not found in token'}), 400
         
-        # Optimized database query with specific fields only
-        user = db.session.query(
-            User.id, User.email, User.name, User.display_name, User.photo_url, 
-            User.firebase_uid, User.password_hash, User.onboarding_completed
-        ).filter_by(email=email).first()
-        
-        if user:
-            # User exists - return minimal data for faster response
-            return jsonify({
-                'exists': True,
-                'has_password': bool(user.password_hash),
-                'user': {
-                    'id': user.id,
-                    'email': user.email,
-                    'name': user.name,
-                    'display_name': user.display_name,
-                    'photo_url': user.photo_url,
-                    'firebase_uid': user.firebase_uid,
-                    'onboarding_completed': user.onboarding_completed
-                },
-                'token': id_token
-            })
-        else:
-            # User doesn't exist - return minimal data for creation
-            return jsonify({
-                'exists': False,
-                'has_password': False,
-                'email': email,
-                'name': token_data.get('name', ''),
-                'photo_url': token_data.get('picture', ''),
-                'firebase_uid': token_data.get('sub', ''),
-                'token': id_token
-            })
+        # Query only essential fields to avoid missing column errors
+        logger.info(f"Checking if user exists: {email}")
+        try:
+            # Use raw SQL to query only existing columns
+            result = db.session.execute(
+                db.text("""
+                    SELECT id, email, name, display_name, photo_url, 
+                           firebase_uid, password_hash, onboarding_completed
+                    FROM users 
+                    WHERE email = :email
+                    LIMIT 1
+                """),
+                {'email': email}
+            ).fetchone()
+            
+            if result:
+                # User exists - return minimal data
+                logger.info(f"User found: {email}")
+                return jsonify({
+                    'exists': True,
+                    'has_password': bool(result[6]),  # password_hash
+                    'user': {
+                        'id': result[0],
+                        'email': result[1],
+                        'name': result[2],
+                        'display_name': result[3],
+                        'photo_url': result[4],
+                        'firebase_uid': result[5],
+                        'onboarding_completed': result[7] if result[7] is not None else False
+                    },
+                    'token': id_token
+                })
+            else:
+                # User doesn't exist
+                logger.info(f"User not found: {email}")
+                return jsonify({
+                    'exists': False,
+                    'has_password': False,
+                    'email': email,
+                    'name': token_data.get('name', ''),
+                    'photo_url': token_data.get('picture', ''),
+                    'firebase_uid': token_data.get('sub', ''),
+                    'token': id_token
+                })
+        except Exception as db_error:
+            logger.error(f"Database query error: {db_error}")
+            logger.error(f"Error type: {type(db_error).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return jsonify({'error': 'Database error'}), 500
+            
     except Exception as e:
         logger.error(f"Error checking user: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'error': 'Failed to check user'}), 500
 
 @app.route('/api/v1/auth/create-user', methods=['POST'])
