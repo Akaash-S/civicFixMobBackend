@@ -1901,6 +1901,8 @@ def login_with_password():
         email = data.get('email')
         password = data.get('password')
         
+        logger.info(f"Login attempt for email: {email}")
+        
         if not email:
             return jsonify({'error': 'Email is required'}), 400
             
@@ -1908,29 +1910,53 @@ def login_with_password():
             return jsonify({'error': 'Password is required'}), 400
         
         # Find user by email in Neon database
-        user = User.query.filter_by(email=email).first()
+        try:
+            user = User.query.filter_by(email=email).first()
+            logger.info(f"User query result: {user is not None}")
+        except Exception as db_error:
+            logger.error(f"Database query error: {db_error}")
+            return jsonify({'error': 'Database error'}), 500
+        
         if not user:
+            logger.info(f"User not found for email: {email}")
             return jsonify({'error': 'User not found'}), 404
         
         # Check if user has password set
         if not user.password_hash:
+            logger.info(f"User {email} has no password set")
             return jsonify({'error': 'Password not set for this account'}), 400
         
         # Verify password against Neon database
-        if not verify_password(password, user.password_hash):
+        try:
+            password_valid = verify_password(password, user.password_hash)
+            logger.info(f"Password verification result: {password_valid}")
+        except Exception as verify_error:
+            logger.error(f"Password verification error: {verify_error}")
+            return jsonify({'error': 'Password verification failed'}), 500
+        
+        if not password_valid:
+            logger.info(f"Invalid password for user: {email}")
             return jsonify({'error': 'Invalid password'}), 401
         
         # Generate JWT token for the user
-        token_payload = {
-            'user_id': user.id,
-            'email': user.email,
-            'firebase_uid': user.firebase_uid,
-            'exp': datetime.utcnow() + timedelta(days=30)
-        }
-        
-        token = jwt.encode(token_payload, app.config['SECRET_KEY'], algorithm='HS256')
-        
-        logger.info(f"User {user.email} logged in successfully with password")
+        try:
+            token_payload = {
+                'user_id': user.id,
+                'email': user.email,
+                'firebase_uid': user.firebase_uid,
+                'exp': datetime.utcnow() + timedelta(days=30)
+            }
+            
+            token = jwt.encode(token_payload, app.config['SECRET_KEY'], algorithm='HS256')
+            
+            # Handle both string and bytes return from jwt.encode
+            if isinstance(token, bytes):
+                token = token.decode('utf-8')
+            
+            logger.info(f"User {user.email} logged in successfully with password")
+        except Exception as jwt_error:
+            logger.error(f"JWT token generation error: {jwt_error}")
+            return jsonify({'error': 'Token generation failed'}), 500
         
         return jsonify({
             'message': 'Login successful',
@@ -1941,6 +1967,10 @@ def login_with_password():
         
     except Exception as e:
         logger.error(f"Error in password login: {e}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        logger.error(f"Exception details: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/v1/onboarding/language', methods=['POST'])
