@@ -786,11 +786,11 @@ def manual_init_database():
         
         # Add missing columns to users table if needed
         logger.info("Checking for missing columns in users table...")
-        if 'users' in existing_tables:
+        if 'users' in existing_tables or 'users' in inspector.get_table_names():
             existing_columns = [col['name'] for col in inspector.get_columns('users')]
-            logger.info(f"Existing columns: {len(existing_columns)}")
+            logger.info(f"Existing user columns: {len(existing_columns)}")
             
-            required_columns = {
+            user_columns = {
                 'theme_color': "VARCHAR(20) DEFAULT 'blue'",
                 'font_size': "VARCHAR(20) DEFAULT 'medium'",
                 'issue_updates_notifications': "BOOLEAN DEFAULT TRUE",
@@ -808,12 +808,12 @@ def manual_init_database():
                 'voice_over': "BOOLEAN DEFAULT FALSE",
             }
             
-            missing_columns = {col: definition for col, definition in required_columns.items() 
+            missing_user_columns = {col: definition for col, definition in user_columns.items() 
                               if col not in existing_columns}
             
-            if missing_columns:
-                logger.info(f"Adding {len(missing_columns)} missing columns...")
-                for col_name, col_definition in missing_columns.items():
+            if missing_user_columns:
+                logger.info(f"Adding {len(missing_user_columns)} missing columns to users table...")
+                for col_name, col_definition in missing_user_columns.items():
                     try:
                         sql = f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col_name} {col_definition}"
                         db.session.execute(db.text(sql))
@@ -823,7 +823,41 @@ def manual_init_database():
                         logger.error(f"Failed to add column {col_name}: {e}")
                         db.session.rollback()
             else:
-                logger.info("All columns exist")
+                logger.info("All user columns exist")
+        
+        # Add missing columns to issues table if needed
+        logger.info("Checking for missing columns in issues table...")
+        if 'issues' in existing_tables or 'issues' in inspector.get_table_names():
+            existing_columns = [col['name'] for col in inspector.get_columns('issues')]
+            logger.info(f"Existing issue columns: {len(existing_columns)}")
+            
+            issue_columns = {
+                'ai_verification_status': "VARCHAR(20) DEFAULT 'PENDING'",
+                'ai_confidence_score': "FLOAT DEFAULT 0.0",
+                'government_images': "TEXT",
+                'government_notes': "TEXT",
+                'citizen_verification_status': "VARCHAR(20)",
+                'escalation_status': "VARCHAR(20) DEFAULT 'NONE'",
+                'escalation_date': "TIMESTAMP",
+                'resolution_date': "TIMESTAMP",
+            }
+            
+            missing_issue_columns = {col: definition for col, definition in issue_columns.items() 
+                              if col not in existing_columns}
+            
+            if missing_issue_columns:
+                logger.info(f"Adding {len(missing_issue_columns)} missing columns to issues table...")
+                for col_name, col_definition in missing_issue_columns.items():
+                    try:
+                        sql = f"ALTER TABLE issues ADD COLUMN IF NOT EXISTS {col_name} {col_definition}"
+                        db.session.execute(db.text(sql))
+                        db.session.commit()
+                        logger.info(f"Added column: {col_name}")
+                    except Exception as e:
+                        logger.error(f"Failed to add column {col_name}: {e}")
+                        db.session.rollback()
+            else:
+                logger.info("All issue columns exist")
         
         # Verify tables were created
         inspector = db.inspect(db.engine)
