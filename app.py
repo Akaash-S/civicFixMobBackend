@@ -425,8 +425,42 @@ class User(db.Model):
             'voice_over': self.voice_over,
             
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'trust_score': self.calculate_trust_score()
         }
+
+    def calculate_trust_score(self):
+        """Calculate user trust score based on verified issues"""
+        try:
+            # Base score
+            score = 50
+            
+            # Get user's issues
+            total_issues = 0
+            verified_issues = 0
+            rejected_issues = 0
+            fake_issues = 0
+            
+            if self.issues:
+                total_issues = len(self.issues)
+                for issue in self.issues:
+                    if issue.status == 'CLOSED' or issue.status == 'RESOLVED':
+                        verified_issues += 1
+                    elif issue.status == 'REJECTED':
+                        rejected_issues += 1
+                        # Check if rejected due to fake/manipulation
+                        if issue.ai_verification_status == 'REJECTED':
+                            fake_issues += 1
+            
+            # Calculate adjustments
+            score += (verified_issues * 5)
+            score -= (rejected_issues * 2)
+            score -= (fake_issues * 10)
+            
+            # Cap score between 0 and 100
+            return max(0, min(100, score))
+        except:
+            return 50
 
 class Issue(db.Model):
     __tablename__ = 'issues'
@@ -1114,6 +1148,30 @@ def get_issues():
         
         if status:
             query = query.filter(Issue.status == status)
+            
+        # Location filtering
+        latitude = request.args.get('latitude', type=float)
+        longitude = request.args.get('longitude', type=float)
+        radius = request.args.get('radius', type=float) # in kilometers
+        
+        if latitude is not None and longitude is not None and radius is not None:
+             # Haversine formula for distance calculation
+            from sqlalchemy import func
+            
+            # Earth's radius in kilometers
+            R = 6371
+            
+            # Calculate distance using SQL
+            distance_expr = func.acos(
+                func.sin(func.radians(latitude)) * func.sin(func.radians(Issue.latitude)) +
+                func.cos(func.radians(latitude)) * func.cos(func.radians(Issue.latitude)) *
+                func.cos(func.radians(Issue.longitude) - func.radians(longitude))
+            ) * R
+            
+            query = query.filter(distance_expr <= radius)
+            
+            # Add distance to results if needed, or just order by distance
+            # query = query.order_by(distance_expr)
         
         query = query.order_by(Issue.created_at.desc())
         pagination = query.paginate(page=page, per_page=per_page, error_out=False)
@@ -2916,3 +2974,128 @@ def get_stats():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
+# ================================
+# Automated Escalation & Jobs
+# ================================
+
+@app.route('/api/v1/jobs/check-escalations', methods=['POST'])
+def check_escalations():
+    """Check for issues that need escalation (Cron Job)"""
+    try:
+        # Check for authorization (e.g., specific API key for jobs)
+        api_key = request.headers.get('X-Job-Key')
+        # In production, verify this key against environment variable
+        
+        logger.info("Starting escalation check job...")
+        
+        # specific period: 30 days ago
+        escalation_threshold = datetime.utcnow() - timedelta(days=30)
+        
+        # Find issues that are OPEN or IN_PROGRESS and older than threshold
+        # And haven't been escalated yet
+        issues_to_escalate = Issue.query.filter(
+            Issue.status.in_(['OPEN', 'IN_PROGRESS']),
+            Issue.created_at <= escalation_threshold,
+            Issue.escalation_status == 'NONE'
+        ).all()
+        
+        escalated_count = 0
+        
+        for issue in issues_to_escalate:
+            try:
+                logger.info(f"Escalating issue #{issue.id} (Created: {issue.created_at})")
+                
+                # Update issue status
+                issue.escalation_status = 'ESCALATED'
+                issue.escalation_date = datetime.utcnow()
+                issue.priority = 'CRITICAL' # Bump priority
+                
+                # Create timeline event
+                timeline_service.create_event(
+                    issue_id=issue.id,
+                    event_type=EventType.ESCALATION_TRIGGERED,
+                    actor_type=ActorType.SYSTEM,
+                    actor_id=None,
+                    description="Issue automatically escalated due to delay (>30 days)",
+                    metadata={
+                        'reason': 'delay_exceeded',
+                        'days_open': (datetime.utcnow() - issue.created_at).days
+                    }
+                )
+                
+                escalated_count += 1
+            except Exception as e:
+                logger.error(f"Failed to escalate issue #{issue.id}: {e}")
+                continue
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Escalation check completed',
+            'escalated_count': escalated_count
+        })
+        
+    except Exception as e:
+        logger.error(f"Escalation job failed: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# ================================
+# AI Assistant Proxy
+# ================================
+
+@app.route('/api/v1/assistant/chat', methods=['POST'])
+@require_auth
+def assistant_chat(current_user):
+    """Chat with AI Assistant"""
+    try:
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({'error': 'Message required'}), 400
+        
+        user_message = data['message']
+        context = data.get('context', {}) # issue_id, screen, etc.
+        
+        # Prepare payload for AI Service
+        payload = {
+            'user_id': current_user.id,
+            'message': user_message,
+            'user_name': current_user.name,
+            'context': context
+        }
+        
+        # Call AI Service (assuming it's running locally or accessible)
+        # In a real microservices setup, use the service URL
+        ai_service_url = os.environ.get('AI_SERVICE_URL', 'http://localhost:8001')
+        
+        import requests
+        try:
+            # We'll implement this endpoint in the AI service next
+            response = requests.post(
+                f"{ai_service_url}/api/v1/assistant/chat",
+                json=payload,
+                headers={'X-API-Key': os.environ.get('AI_SERVICE_API_KEY', 'dev-key')},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return jsonify(response.json())
+            else:
+                # Fallback if AI service error
+                logger.error(f"AI Service error: {response.text}")
+                return jsonify({
+                    'response': "I'm having trouble connecting to my brain right now. Please try again later.",
+                    'suggestions': []
+                })
+                
+        except Exception as conn_err:
+            logger.error(f"Connection to AI Service failed: {conn_err}")
+            # Fallback response
+            return jsonify({
+                'response': "I can help you with reporting issues, tracking status, or explaining the process. What would you like to know?",
+                'suggestions': ["How to report?", "Check my status", "Escalation process"]
+            })
+
+    except Exception as e:
+        logger.error(f"Assistant chat error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
